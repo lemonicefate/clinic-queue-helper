@@ -1,0 +1,16 @@
+{
+  "bind_host": "0.0.0.0",
+  "port": 8000,
+  "his_data_path": "\\\\192.168.1.199\\D\\WM003\\DATA",
+  "rg011m1_filename": "RG011M1.DBF",
+  "pd001m1_filename": "PD001M1.DBF",
+  "poll_interval_ms": 500,
+  "browser_refresh_ms": 1000,
+  "new_highlight_seconds": 300,
+  "room_count": 2,
+  "doctor_room_map": {},
+  "patient_number_field": "NUM",
+  "patient_name_field": "",
+  "sqlite_path": "data/clinic_queue.sqlite3",
+  "log_path": "logs/app.log"
+}

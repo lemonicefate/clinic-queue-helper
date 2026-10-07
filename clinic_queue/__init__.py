@@ -1,0 +1,1 @@
+"""Clinic Queue Helper application."""
