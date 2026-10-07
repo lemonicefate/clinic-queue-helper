@@ -31,6 +31,7 @@ class HISPoller:
         self.store = store
         self.recovery_interval_seconds = recovery_interval_seconds
         self.tracked_by_recno: dict[int, EncounterSnapshot] = {}
+        self.pending_recno: set[int] = set()
         self.last_record_count: int | None = None
         self._header_layout: tuple[object, ...] | None = None
         self._last_full_scan = 0.0
@@ -82,6 +83,7 @@ class HISPoller:
             unreadable_recno=unreadable,
         )
         self.tracked_by_recno = {encounter.recno: encounter for encounter in encounters}
+        self.pending_recno = set(unreadable)
         self.last_record_count = header.record_count
         self._header_layout = self._layout(header)
         self._patient_names = names
@@ -105,7 +107,7 @@ class HISPoller:
     def _poll_incremental(self, header: DBFHeader) -> None:
         assert self.last_record_count is not None
         first_new = self.last_record_count + 1
-        recnos = set(self.tracked_by_recno)
+        recnos = set(self.tracked_by_recno) | self.pending_recno
         if first_new <= header.record_count:
             recnos.update(range(first_new, header.record_count + 1))
         unreadable: list[int] = []
@@ -117,6 +119,7 @@ class HISPoller:
             header,
             record_errors=unreadable,
         ):
+            self.pending_recno.discard(record.recno)
             previous = self.tracked_by_recno.get(record.recno)
             if previous is not None and self._record_matches_snapshot(record, previous):
                 continue
@@ -137,6 +140,7 @@ class HISPoller:
 
         if unreadable:
             logger.warning("HIS poll skipped malformed record offsets: %s", unreadable)
+            self.pending_recno.update(unreadable)
         self.last_record_count = header.record_count
         self._header_layout = self._layout(header)
 

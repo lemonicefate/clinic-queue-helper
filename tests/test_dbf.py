@@ -76,6 +76,21 @@ def test_reader_preserves_numeric_logical_and_character_field_values(tmp_path):
     assert record.value("NAME") == "Clinic"
 
 
+def test_iter_records_can_limit_decoded_fields(tmp_path):
+    from clinic_queue.dbf import DBFReader
+
+    path = write_dbf(
+        tmp_path / "patients.DBF",
+        [("CHARTNO", "C", 6), ("FULLNAME", "C", 12), ("NATIONAL_ID", "C", 12)],
+        [{"CHARTNO": "100001", "FULLNAME": "Clinic User", "NATIONAL_ID": "A123456789"}],
+    )
+
+    records = list(DBFReader(path).iter_records(field_names={"CHARTNO", "FULLNAME"}))
+
+    assert len(records) == 1
+    assert records[0].raw_fields == {"CHARTNO": "100001", "FULLNAME": "Clinic User "}
+
+
 def test_malformed_record_is_logged_and_later_scan_continues(tmp_path, caplog):
     path = write_dbf(
         tmp_path / "source.DBF",

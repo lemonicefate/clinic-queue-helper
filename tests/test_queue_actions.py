@@ -27,6 +27,7 @@ def test_presence_and_overdue_changes_are_saved_and_away_leaves_waiting_order(tm
     store.set_presence("two", PresenceState.AWAY)
     board = store.get_board()
     assert [entry["encounter_key"] for entry in board["rooms"][1]["waiting"]] == ["one", "three"]
+    assert [entry["queue_position"] for entry in board["rooms"][1]["waiting"]] == [1, 2]
     assert [entry["encounter_key"] for entry in board["rooms"][1]["away"]] == ["two"]
 
     store.set_presence("two", PresenceState.PRESENT)
@@ -38,8 +39,27 @@ def test_presence_and_overdue_changes_are_saved_and_away_leaves_waiting_order(tm
         "three",
         "two",
     ]
+    assert [entry["queue_position"] for entry in board["rooms"][1]["waiting"]] == [1, 2, 3]
     assert board["rooms"][1]["waiting"][0]["overdue"] is True
     assert board["rooms"][1]["waiting"][2]["presence_override"] is True
+
+
+def test_room_assignment_compacts_both_queues_and_reentry_appends_at_tail(tmp_path):
+    _, store = ready_store(tmp_path)
+
+    store.assign_room("two", 2)
+    board = store.get_board()
+    assert [entry["queue_position"] for entry in board["rooms"][1]["waiting"]] == [1, 2]
+    assert [entry["queue_position"] for entry in board["rooms"][2]["waiting"]] == [1]
+
+    store.assign_room("two", 1)
+    board = store.get_board()
+    assert [entry["encounter_key"] for entry in board["rooms"][1]["waiting"]] == [
+        "one",
+        "three",
+        "two",
+    ]
+    assert [entry["queue_position"] for entry in board["rooms"][1]["waiting"]] == [1, 2, 3]
 
 
 def test_reorder_and_up_down_actions_preserve_explicit_room_order(tmp_path):

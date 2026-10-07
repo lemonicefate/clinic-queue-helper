@@ -6,7 +6,7 @@ import struct
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import BinaryIO, Iterable, Iterator
 
 
 logger = logging.getLogger("clinic_queue.dbf")
@@ -156,9 +156,13 @@ class DBFReader:
         end: int | None = None,
         *,
         header: DBFHeader | None = None,
+        field_names: Iterable[str] | None = None,
         record_errors: list[int] | None = None,
     ) -> Iterator[DBFRecord]:
         header = header or self.read_header()
+        selected_fields = (
+            None if field_names is None else {field_name.upper() for field_name in field_names}
+        )
         last = header.record_count if end is None else min(end, header.record_count)
         if type(start) is not int or start < 1:
             raise DBFReadError(f"Record scan start must be a positive record number: {start}")
@@ -168,16 +172,49 @@ class DBFReader:
             with open(self.path, "rb") as source:
                 for recno in range(start, last + 1):
                     offset = header.header_length + (recno - 1) * header.record_length
-                    source.seek(offset)
-                    data = source.read(header.record_length)
                     try:
-                        yield self._parse_record(data, recno, header)
+                        if selected_fields is None:
+                            source.seek(offset)
+                            data = source.read(header.record_length)
+                            record = self._parse_record(data, recno, header)
+                        else:
+                            record = self._read_selected_record(
+                                source, offset, recno, header, selected_fields
+                            )
+                        yield record
                     except DBFReadError as exc:
                         if record_errors is not None:
                             record_errors.append(recno)
                         logger.warning("Skipping malformed DBF record %s in %s: %s", recno, self.path, exc)
         except OSError as exc:
             raise DBFReadError(f"Cannot scan DBF records from {self.path}: {exc}") from exc
+
+    def _read_selected_record(
+        self,
+        source: BinaryIO,
+        offset: int,
+        recno: int,
+        header: DBFHeader,
+        field_names: set[str],
+    ) -> DBFRecord:
+        source.seek(offset)
+        deleted_marker = source.read(1)
+        if len(deleted_marker) != 1:
+            raise DBFReadError(f"Incomplete DBF record {recno}: missing deletion marker")
+
+        raw_fields: dict[str, str] = {}
+        for field in header.fields:
+            if field.name not in field_names:
+                continue
+            source.seek(offset + field.offset)
+            value_bytes = source.read(field.width)
+            if len(value_bytes) != field.width:
+                raise DBFReadError(
+                    f"Incomplete DBF record {recno}: field {field.name} is truncated"
+                )
+            codec = self.encoding if field.kind in {"C", "V", "Q", "M", "G", "P", "W"} else "ascii"
+            raw_fields[field.name] = value_bytes.decode(codec, errors="replace")
+        return DBFRecord(recno=recno, deleted=deleted_marker == b"*", raw_fields=raw_fields)
 
     def _parse_record(self, data: bytes, recno: int, header: DBFHeader) -> DBFRecord:
         if len(data) != header.record_length:

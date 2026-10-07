@@ -98,7 +98,10 @@ class PatientNameLookup:
                 logger.warning("%s field(s) %s are unavailable; showing chart numbers", self.path.name, missing)
                 return
             self.lookup_available = True
-            for record in reader.iter_records(end=header.record_count):
+            for record in reader.iter_records(
+                end=header.record_count,
+                field_names=(config.patient_number_field, config.patient_name_field),
+            ):
                 if record.deleted:
                     continue
                 number = _normalized_field(record.raw_fields, config.patient_number_field)

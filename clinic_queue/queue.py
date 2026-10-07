@@ -101,6 +101,36 @@ class QueueStore:
         ).fetchone()
         return int(result[0])
 
+    @staticmethod
+    def _normalize_room_positions(
+        connection: sqlite3.Connection,
+        room_id: int,
+        timestamp: str,
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT encounter_key, queue_position FROM encounter_state
+            WHERE room_id = ? AND presence_status = 'PRESENT'
+              AND queue_status NOT IN ('COMPLETED', 'INVALIDATED')
+            ORDER BY CASE WHEN queue_position IS NULL THEN 1 ELSE 0 END,
+                     queue_position, created_at, encounter_key
+            """,
+            (room_id,),
+        ).fetchall()
+        changed_positions = [
+            (position, timestamp, str(row["encounter_key"]))
+            for position, row in enumerate(rows, start=1)
+            if row["queue_position"] != position
+        ]
+        connection.executemany(
+            """
+            UPDATE encounter_state
+            SET queue_position = ?, updated_at = ?
+            WHERE encounter_key = ?
+            """,
+            changed_positions,
+        )
+
     def reconcile(
         self,
         encounters: Sequence[EncounterSnapshot],
@@ -270,6 +300,9 @@ class QueueStore:
                     ((key,) for key in stale_keys),
                 )
 
+            for room_id in (1, 2):
+                self._normalize_room_positions(connection, room_id, timestamp)
+
     def assign_room(self, encounter_key: str, room_id: int) -> dict[str, Any]:
         """Set a staff room override and append a present patient to that room's tail."""
         if room_id not in (1, 2):
@@ -297,6 +330,11 @@ class QueueStore:
                 """,
                 (room_id, position, self._now(), encounter_key),
             )
+            timestamp = self._now()
+            old_room_id = row["room_id"]
+            if old_room_id in (1, 2):
+                self._normalize_room_positions(connection, int(old_room_id), timestamp)
+            self._normalize_room_positions(connection, room_id, timestamp)
             updated = connection.execute(
                 "SELECT * FROM encounter_state WHERE encounter_key = ?",
                 (encounter_key,),
@@ -376,6 +414,8 @@ class QueueStore:
                 """,
                 (presence.value, position, queue_status, current_flag, timestamp, encounter_key),
             )
+            if room_id in (1, 2):
+                self._normalize_room_positions(connection, int(room_id), timestamp)
             self._log_action(connection, encounter_key, "presence", old_presence, presence.value)
             logger.info("Set encounter %s presence to %s", encounter_key, presence.value)
             updated = connection.execute(
@@ -560,7 +600,13 @@ class QueueStore:
         """Remove an encounter that no longer belongs to the clinic date."""
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT room_id FROM encounter_state WHERE encounter_key = ?",
+                (encounter_key,),
+            ).fetchone()
             connection.execute("DELETE FROM encounter_state WHERE encounter_key = ?", (encounter_key,))
+            if row is not None and row["room_id"] in (1, 2):
+                self._normalize_room_positions(connection, int(row["room_id"]), self._now())
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

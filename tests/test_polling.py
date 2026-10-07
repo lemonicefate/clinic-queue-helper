@@ -88,6 +88,29 @@ def test_tracked_record_changes_reconcile_completion_and_deletion(tmp_path):
     assert source.exists()
 
 
+def test_poller_retries_a_partially_written_appended_record(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    source = make_source(config, [rg_row("100001")])
+    poller, store = make_poller(config)
+    poller.initialize()
+
+    make_source(config, [rg_row("100001"), rg_row("100002")])
+    header_size = 32 + len(FIELDS) * 32 + 1
+    record_size = 1 + sum(width for _, _, width in FIELDS)
+    source.write_bytes(source.read_bytes()[: header_size + record_size + 2])
+    poller.poll_once()
+
+    assert [entry["patient_no"] for entry in store.get_board()["rooms"][1]["waiting"]] == ["100001"]
+
+    make_source(config, [rg_row("100001"), rg_row("100002")])
+    poller.poll_once()
+
+    assert [entry["patient_no"] for entry in store.get_board()["rooms"][1]["waiting"]] == [
+        "100001",
+        "100002",
+    ]
+
+
 def test_recovery_scan_discovers_a_same_count_record_added_outside_the_append_range(tmp_path):
     config = create_config(tmp_path, {"DOC1": 1})
     make_source(config, [rg_row("100001"), rg_row("100002", visit_day=date.today() - timedelta(days=1))])

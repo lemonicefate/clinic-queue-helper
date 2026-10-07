@@ -81,7 +81,7 @@ def test_today_scan_uses_tetday_and_excludes_deleted_records(tmp_path, caplog):
     assert "PD001M1.DBF" in caplog.text
 
 
-def test_patient_lookup_uses_only_configured_number_and_name_fields(tmp_path):
+def test_patient_lookup_uses_only_configured_number_and_name_fields(tmp_path, monkeypatch):
     his_path = tmp_path / "his"
     his_path.mkdir()
     write_dbf(
@@ -124,13 +124,26 @@ def test_patient_lookup_uses_only_configured_number_and_name_fields(tmp_path):
         encoding="utf-8",
     )
 
+    from clinic_queue.dbf import DBFReader
     from clinic_queue.his import scan_today
 
-    encounters = scan_today(load_config(config_path), date(2026, 10, 8))
+    config = load_config(config_path)
+    requested_fields = []
+    original_iter_records = DBFReader.iter_records
+
+    def observe_iter_records(self, *args, **kwargs):
+        if self.path.name == "PD001M1.DBF":
+            requested_fields.append(set(kwargs.get("field_names", ())))
+        yield from original_iter_records(self, *args, **kwargs)
+
+    monkeypatch.setattr(DBFReader, "iter_records", observe_iter_records)
+
+    encounters = scan_today(config, date(2026, 10, 8))
 
     assert len(encounters) == 1
     assert encounters[0].patient_name == "王小明"
     assert encounters[0].patient_no == "100001"
+    assert requested_fields == [{"CHARTNO", "FULLNAME"}]
     assert "NATIONAL_ID" not in encounters[0].raw_his
 
 
