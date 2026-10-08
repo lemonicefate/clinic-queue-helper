@@ -92,8 +92,6 @@
       .badge { display: inline-flex; align-items: center; min-height: 1.4rem; padding: .08rem .45rem; border-radius: 999px; background: #edf3f3; color: #405a60; font-size: .75rem; font-weight: 600; white-space: nowrap; }
       .badge-new { background: #ffedbb; color: #664907; }
       .badge-overdue { background: var(--error-surface); color: var(--error-ink); }
-      .badge-away { background: var(--warning-surface); color: var(--warning-ink); }
-      .badge-unconfirmed { background: #f0eaf8; color: #583d76; }
       .queue-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .35rem; }
       button { min-height: 2.55rem; padding: .45rem .7rem; border: 1px solid #bdcecf; border-radius: .5rem; background: var(--surface); color: #29464c; cursor: pointer; font-size: .82rem; font-weight: 600; }
       button:hover:not(:disabled) { border-color: #91b5ae; background: #f0f7f5; color: var(--accent-deep); }
@@ -181,11 +179,6 @@
               <div class="patient-badges">
                 {% if encounter.is_new %}<span class="badge badge-new">NEW</span>{% endif %}
                 {% if encounter.overdue %}<span class="badge badge-overdue">過號</span>{% endif %}
-                {% if encounter.queue_status == 'WAITING' and encounter.presence_status == 'AWAY' %}<span class="badge badge-away">已掛暫離</span>{% endif %}
-                {% if encounter.time_kind is none %}<span class="badge badge-unconfirmed">診別未確認</span>{% endif %}
-                {% if encounter.queue_status == 'WAITING' %}<span class="badge">候診</span>{% endif %}
-                {% if encounter.queue_status == 'PREREGISTERED' %}<span class="badge">已約未到</span>{% endif %}
-                {% if encounter.queue_status == 'COMPLETED' %}<span class="badge">完成</span>{% endif %}
               </div>
             </div>
             <span class="secondary">病歷號 {{ encounter.patient_no }}</span>

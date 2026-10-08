@@ -47,6 +47,37 @@ def make_ready_app(tmp_path):
     return app
 
 
+def test_grouped_patient_cards_keep_only_new_and_overdue_badges(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("waiting", "DOC1", patient_no="100101"),
+            snapshot("away", "DOC1", presence=PresenceState.AWAY, patient_no="100102"),
+            snapshot("preregistered", "DOC1", state=HISState.PREREGISTERED, patient_no="100103"),
+            snapshot("completed", "DOC1", state=HISState.COMPLETED, patient_no="100104"),
+            snapshot("unconfirmed", "DOC1", patient_no="100105", time_kind=None),
+            snapshot("unmatched", "DOCX", patient_no="100106"),
+            snapshot("unmatched-completed", "DOCX", state=HISState.COMPLETED, patient_no="100107"),
+        ],
+        config.doctor_room_map,
+    )
+    app.state.queue_store.set_overdue("waiting", True)
+
+    async def get_page():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.get("/")
+
+    response = asyncio.run(get_page())
+
+    assert response.status_code == 200
+    badge_labels = re.findall(r'<span class="badge(?: [^"]+)?">([^<]+)</span>', response.text)
+    assert "NEW" in badge_labels
+    assert "過號" in badge_labels
+    assert not {"候診", "已掛暫離", "已約未到", "完成", "診別未確認"}.intersection(badge_labels)
+
+
 def test_both_room_view_has_room_columns_and_collapsed_completed_section(tmp_path):
     app = make_ready_app(tmp_path)
 
@@ -102,7 +133,7 @@ def test_room_lists_waiting_away_and_preregistered_in_order_without_preregistere
         flags=re.DOTALL,
     )
     assert preregistered_card is not None
-    assert "已約未到" in preregistered_card.group(0)
+    assert "已約未到" not in preregistered_card.group(0)
     assert "data-action=" not in preregistered_card.group(0)
     away_card = re.search(
         r'<article\b[^>]*data-encounter-key="away"[^>]*>.*?</article>',
@@ -138,7 +169,7 @@ def test_unknown_session_waiting_card_stays_visible_without_presence_actions(tmp
         flags=re.DOTALL,
     )
     assert len(cards) == 1
-    assert "診別未確認" in cards[0]
+    assert "診別未確認" not in cards[0]
     assert 'data-action="present"' not in cards[0]
     assert 'data-action="away"' not in cards[0]
 
