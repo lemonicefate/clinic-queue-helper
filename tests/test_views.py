@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sqlite3
 
 import httpx
@@ -57,14 +58,16 @@ def test_both_room_view_has_room_columns_and_collapsed_completed_section(tmp_pat
     response = asyncio.run(get_page())
 
     assert response.status_code == 200
-    assert 'aria-label="Room 1"' in response.text
-    assert 'aria-label="Room 2"' in response.text
+    assert 'aria-label="一診"' in response.text
+    assert 'aria-label="二診"' in response.text
     assert "#15 Name 100001" in response.text
     assert "#15 Name 100002" in response.text
-    assert "Unassigned" in response.text
+    assert "未納入一診／二診篩選" in response.text
     assert "#17 Name 100004" in response.text
     assert '<details class="completed-section">' in response.text
     assert '<details class="completed-section" open' not in response.text
+    assert '<details class="unconfirmed" aria-label="診別未確認">' in response.text
+    assert "診別未確認 (0)" in response.text
     assert 'data-room-column="1"' in response.text
     assert 'data-room-column="2"' in response.text
     assert 'data-room-id="1" data-time-kind="1"' in response.text
@@ -88,12 +91,13 @@ def test_single_room_views_filter_columns_and_keep_queue_controls(tmp_path):
     room_one, room_two = asyncio.run(get_pages())
 
     assert room_one.status_code == 200
-    assert 'aria-label="Room 1"' in room_one.text
-    assert 'aria-label="Room 2"' not in room_one.text
+    assert 'aria-label="一診"' in room_one.text
+    assert 'aria-label="二診"' not in room_one.text
     assert 'data-action="up"' in room_one.text
     assert "下一位" not in room_one.text
-    assert "Unassigned" in room_one.text
-    assert "指派 Room 1" in room_one.text
+    assert "未納入一診／二診篩選" in room_one.text
+    assert "指派" not in room_one.text
+    assert 'data-assign-room' not in room_one.text
     assert "#18 Name 100005" in room_one.text
     assert "#19 Name 100006" not in room_one.text
     assert "過號" in room_one.text
@@ -102,8 +106,8 @@ def test_single_room_views_filter_columns_and_keep_queue_controls(tmp_path):
     assert "看診中" not in room_two.text
     assert "已叫號" not in room_two.text
     assert room_two.status_code == 200
-    assert 'aria-label="Room 2"' in room_two.text
-    assert 'aria-label="Room 1"' not in room_two.text
+    assert 'aria-label="二診"' in room_two.text
+    assert 'aria-label="一診"' not in room_two.text
     assert "下一位" not in room_two.text
     assert "#19 Name 100006" in room_two.text
     assert "#18 Name 100005" not in room_two.text
@@ -169,14 +173,14 @@ def test_browser_session_filters_every_list_and_keeps_unknown_sessions_separate(
             snapshot("morning-away", "DOC1", presence=PresenceState.AWAY, patient_no="100104", time_kind="1"),
             snapshot("noon-away", "DOC1", presence=PresenceState.AWAY, patient_no="100105", time_kind="2"),
             snapshot("evening-away", "DOC2", presence=PresenceState.AWAY, patient_no="100113", time_kind="3"),
-            snapshot("morning-unassigned", "DOCX", patient_no="100106", time_kind="1"),
-            snapshot("noon-unassigned", "DOCX", patient_no="100107", time_kind="2"),
-            snapshot("evening-unassigned", "DOCX", patient_no="100114", time_kind="3"),
+            snapshot("morning-unmatched", "DOCX", patient_no="100106", time_kind="1"),
+            snapshot("noon-unmatched", "DOCX", patient_no="100107", time_kind="2"),
+            snapshot("evening-unmatched", "DOCX", patient_no="100114", time_kind="3"),
             snapshot("morning-completed", "DOC1", patient_no="100108", state=HISState.COMPLETED, time_kind="1"),
             snapshot("noon-completed", "DOC1", patient_no="100109", state=HISState.COMPLETED, time_kind="2"),
             snapshot("evening-completed", "DOC2", patient_no="100115", state=HISState.COMPLETED, time_kind="3"),
             snapshot("unknown-room", "DOC1", patient_no="100110", time_kind="9"),
-            snapshot("unknown-unassigned", "DOCX", patient_no="100111", time_kind=None),
+            snapshot("unknown-unmatched", "DOCX", patient_no="100111", time_kind=None),
             snapshot("unknown-completed", "DOC1", patient_no="100112", state=HISState.COMPLETED, time_kind="0"),
         ],
         config.doctor_room_map,
@@ -229,7 +233,7 @@ def test_browser_session_filters_every_list_and_keeps_unknown_sessions_separate(
     assert "100103" in evening_page.text
     assert "100101" not in evening_page.text
     assert "診別未確認" in morning_page.text
-    assert 'aria-label="Room 2"' not in morning_page.text
+    assert 'aria-label="二診"' not in morning_page.text
 
     morning = morning_response.json()
     noon = noon_response.json()
@@ -245,21 +249,157 @@ def test_browser_session_filters_every_list_and_keeps_unknown_sessions_separate(
     assert [entry["encounter_key"] for entry in evening["rooms"]["2"]["away"]] == [
         "evening-away",
     ]
-    assert [entry["encounter_key"] for entry in evening["unassigned"]] == [
-        "evening-unassigned",
+    assert [entry["encounter_key"] for entry in evening["unmatched"]["waiting"]] == [
+        "evening-unmatched",
     ]
     assert [entry["encounter_key"] for entry in evening["completed"]] == [
         "evening-completed",
     ]
     assert [entry["encounter_key"] for entry in morning["rooms"]["1"]["waiting"]] == ["morning-room"]
     assert [entry["encounter_key"] for entry in morning["rooms"]["1"]["away"]] == ["morning-away"]
-    assert [entry["encounter_key"] for entry in morning["unassigned"]] == ["morning-unassigned"]
+    assert [entry["encounter_key"] for entry in morning["unmatched"]["waiting"]] == ["morning-unmatched"]
     assert [entry["encounter_key"] for entry in morning["completed"]] == ["morning-completed"]
     assert [entry["encounter_key"] for entry in noon["rooms"]["1"]["waiting"]] == ["noon-room"]
     assert [entry["encounter_key"] for entry in noon["rooms"]["1"]["away"]] == ["noon-away"]
-    assert [entry["encounter_key"] for entry in noon["unassigned"]] == ["noon-unassigned"]
+    assert [entry["encounter_key"] for entry in noon["unmatched"]["waiting"]] == ["noon-unmatched"]
     assert [entry["encounter_key"] for entry in noon["completed"]] == ["noon-completed"]
     assert [entry["encounter_key"] for entry in morning["unconfirmed"]["rooms"]["1"]["waiting"]] == ["unknown-room"]
-    assert [entry["encounter_key"] for entry in morning["unconfirmed"]["unassigned"]] == ["unknown-unassigned"]
+    assert [entry["encounter_key"] for entry in morning["unconfirmed"]["unmatched"]["waiting"]] == ["unknown-unmatched"]
     assert [entry["encounter_key"] for entry in morning["unconfirmed"]["completed"]] == ["unknown-completed"]
+    assert '<details class="unconfirmed" aria-label="診別未確認">' in morning_page.text
+    assert "診別未確認 (3)" in morning_page.text
+    for encounter_key in ("unknown-room", "unknown-unmatched", "unknown-completed"):
+        assert len(re.findall(rf'<article\b[^>]*data-encounter-key="{encounter_key}"', morning_page.text)) == 1
     assert morning_refresh.json()["selected_time_kind"] == 1
+
+
+def test_shared_room_filters_move_records_and_survive_restart(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1, "DOC2": 2})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("room-one", "DOC1", patient_no="100201"),
+            snapshot("matched-later", "DOC1", patient_no="100202"),
+            snapshot("matched-away", "DOC1", patient_no="100203"),
+            snapshot("room-two", "DOC2", patient_no="100204"),
+            snapshot("unmatched-completed", "DOCY", patient_no="100205", state=HISState.COMPLETED),
+        ],
+        config.doctor_room_map,
+    )
+    async def save_filter_and_read_from_another_workstation():
+        transport = httpx.ASGITransport(app=app)
+        async with (
+            httpx.AsyncClient(transport=transport, base_url="http://clinic") as first,
+            httpx.AsyncClient(transport=transport, base_url="http://clinic") as second,
+        ):
+            await first.post(
+                "/api/action",
+                json={"encounter_key": "matched-later", "action": "overdue", "value": True},
+            )
+            await first.post(
+                "/api/action",
+                json={"encounter_key": "matched-away", "action": "away"},
+            )
+            await first.post(
+                "/api/action",
+                json={"encounter_key": "matched-away", "action": "overdue", "value": True},
+            )
+            app.state.queue_store.reconcile(
+                [
+                    snapshot("room-one", "DOC1", patient_no="100201"),
+                    snapshot("matched-later", "DOCX", patient_no="100202"),
+                    snapshot("matched-away", "DOCX", patient_no="100203"),
+                    snapshot("room-two", "DOC2", patient_no="100204"),
+                    snapshot("unmatched-completed", "DOCY", patient_no="100205", state=HISState.COMPLETED),
+                ],
+                config.doctor_room_map,
+            )
+            saved = await first.post(
+                "/api/room-doctor-code",
+                json={"room_id": 1, "doctor_code": "DOCX"},
+            )
+            shared = await second.get("/api/queue")
+            duplicate = await second.post(
+                "/api/room-doctor-code",
+                json={"room_id": 2, "doctor_code": "DOCX"},
+            )
+            page = await second.get("/")
+            return saved, shared, duplicate, page
+
+    saved, shared, duplicate, page = asyncio.run(save_filter_and_read_from_another_workstation())
+
+    assert saved.status_code == shared.status_code == 200
+    assert saved.json()["room_doctor_codes"] == {"1": "DOCX", "2": "DOC2"}
+    assert shared.json()["room_doctor_codes"] == {"1": "DOCX", "2": "DOC2"}
+    assert [entry["encounter_key"] for entry in shared.json()["rooms"]["1"]["waiting"]] == [
+        "matched-later",
+    ]
+    assert shared.json()["rooms"]["1"]["waiting"][0]["overdue"] is True
+    assert [entry["encounter_key"] for entry in shared.json()["rooms"]["1"]["away"]] == [
+        "matched-away",
+    ]
+    assert shared.json()["rooms"]["1"]["away"][0]["overdue"] is True
+    assert [entry["encounter_key"] for entry in shared.json()["unmatched"]["waiting"]] == [
+        "room-one",
+    ]
+    assert [entry["encounter_key"] for entry in shared.json()["rooms"]["2"]["waiting"]] == [
+        "room-two",
+    ]
+    assert duplicate.status_code == 400
+    assert duplicate.json()["detail"] == "This physician code is already selected for the other room."
+    assert page.status_code == 200
+    assert 'data-encounter-key="unmatched-completed"' in page.text
+    unmatched_completed_card = re.search(
+        r'<article\b[^>]*data-encounter-key="unmatched-completed"[^>]*>.*?</article>',
+        page.text,
+        flags=re.DOTALL,
+    )
+    assert unmatched_completed_card is not None
+    assert "data-action" not in unmatched_completed_card.group(0)
+
+    restarted_app = create_app(config)
+
+    async def read_after_restart():
+        transport = httpx.ASGITransport(app=restarted_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://clinic") as client:
+            return await client.get("/api/queue")
+
+    restarted = asyncio.run(read_after_restart())
+    assert restarted.status_code == 200
+    assert restarted.json()["room_doctor_codes"] == {"1": "DOCX", "2": "DOC2"}
+
+
+def test_blank_room_filter_has_no_queue_and_assignment_api_is_absent(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [snapshot("room-one", "DOC1"), snapshot("unmatched", "DOCX")],
+        config.doctor_room_map,
+    )
+
+    async def clear_filter_and_check_removed_assignment_api():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://clinic") as client:
+            cleared = await client.post(
+                "/api/room-doctor-code",
+                json={"room_id": 1, "doctor_code": "   "},
+            )
+            assignment = await client.post(
+                "/api/assign",
+                json={"encounter_key": "unmatched", "room_id": 1},
+            )
+            page = await client.get("/")
+            return cleared, assignment, page
+
+    cleared, assignment, page = asyncio.run(clear_filter_and_check_removed_assignment_api())
+
+    assert cleared.status_code == 200
+    assert cleared.json()["room_doctor_codes"]["1"] == ""
+    assert cleared.json()["rooms"]["1"]["waiting"] == []
+    assert {entry["encounter_key"] for entry in cleared.json()["unmatched"]["waiting"]} == {
+        "room-one",
+        "unmatched",
+    }
+    assert assignment.status_code == 404
+    assert page.status_code == 200
+    assert "指派" not in page.text

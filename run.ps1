@@ -12,7 +12,7 @@ if ([string]::IsNullOrWhiteSpace($env:CLINIC_QUEUE_CONFIG)) {
 
 if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
     Write-Output "Configuration file not found: $configPath"
-    Write-Output 'Copy config.example.json to config.json, then edit the HIS path and doctor-to-room mapping.'
+    Write-Output 'Copy config.example.json to config.json, then edit the HIS path and other local settings.'
     exit 2
 }
 

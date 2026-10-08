@@ -77,7 +77,6 @@ class HISPoller:
         )
         self.store.reconcile(
             encounters,
-            self.config.doctor_room_map,
             new_highlight_seconds=self.config.new_highlight_seconds,
             clinic_date=clinic_date,
             unreadable_recno=unreadable,
@@ -133,7 +132,6 @@ class HISPoller:
                 self.store.remove_encounter(previous.encounter_key)
             self.store.reconcile(
                 [encounter],
-                self.config.doctor_room_map,
                 new_highlight_seconds=self.config.new_highlight_seconds,
             )
             self.tracked_by_recno[record.recno] = encounter

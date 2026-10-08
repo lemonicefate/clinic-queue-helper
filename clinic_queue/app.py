@@ -26,9 +26,9 @@ def _selected_time_kind(request: Request) -> ClinicSession:
     return normalize_time_kind(request.cookies.get("clinic_session")) or ClinicSession.MORNING
 
 
-class RoomAssignment(BaseModel):
-    encounter_key: str
+class RoomDoctorCodeUpdate(BaseModel):
     room_id: int
+    doctor_code: str
 
 
 class QueueAction(BaseModel):
@@ -45,6 +45,7 @@ class QueueReorder(BaseModel):
 def create_app(config: AppConfig) -> FastAPI:
     """Create the browser application with an already validated configuration."""
     store = QueueStore(config.sqlite_path)
+    store.initialize_room_doctor_codes(config.doctor_room_map)
     poller = HISPoller(config, store)
 
     @asynccontextmanager
@@ -94,8 +95,18 @@ def create_app(config: AppConfig) -> FastAPI:
         unconfirmed_completed_encounters = [
             encounter
             for encounter in board["unconfirmed"]["completed"]
-            if selected_room is None or encounter["room_id"] in (None, selected_room)
+            if encounter["room_id"] is not None
+            and (selected_room is None or encounter["room_id"] == selected_room)
         ]
+        visible_room_ids = [selected_room] if selected_room is not None else [1, 2]
+        unconfirmed_count = sum(
+            len(board["unconfirmed"]["rooms"][room_id][status])
+            for room_id in visible_room_ids
+            for status in ("waiting", "away")
+        ) + sum(
+            len(board["unconfirmed"]["unmatched"][status])
+            for status in ("waiting", "away", "completed")
+        ) + len(unconfirmed_completed_encounters)
         return templates.TemplateResponse(
             request=request,
             name="index.html",
@@ -108,6 +119,7 @@ def create_app(config: AppConfig) -> FastAPI:
                 "selected_time_kind": selected_time_kind,
                 "completed_encounters": completed_encounters,
                 "unconfirmed_completed_encounters": unconfirmed_completed_encounters,
+                "unconfirmed_count": unconfirmed_count,
                 "browser_refresh_ms": config.browser_refresh_ms,
                 "storage_error": poller.storage_error,
                 "queue_state": {
@@ -126,16 +138,20 @@ def create_app(config: AppConfig) -> FastAPI:
             "storage_error": poller.storage_error,
         }
 
-    @application.post("/api/assign")
-    async def assign_room(assignment: RoomAssignment) -> dict:
+    @application.post("/api/room-doctor-code")
+    async def update_room_doctor_code(update: RoomDoctorCodeUpdate, request: Request) -> dict:
         try:
-            return application.state.queue_store.assign_room(
-                assignment.encounter_key,
-                assignment.room_id,
+            store.set_room_doctor_code(
+                update.room_id,
+                update.doctor_code,
             )
         except QueueError as exc:
-            status_code = 404 if "not found" in str(exc).lower() else 400
-            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            **store.get_board(_selected_time_kind(request)),
+            "his_stale": poller.his_stale,
+            "storage_error": poller.storage_error,
+        }
 
     @application.post("/api/action")
     async def queue_action(action: QueueAction, request: Request) -> dict:

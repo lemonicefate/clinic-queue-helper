@@ -1,6 +1,6 @@
 # Clinic Queue Helper
 
-A small clinic LAN utility for displaying today's HIS registrations and managing Room 1 and Room 2 waiting queues. The application keeps its own queue data in SQLite and reads Visual FoxPro HIS data files as read-only sources.
+A small clinic LAN utility for displaying today's HIS registrations and managing the 一診 and 二診 waiting queues. The application keeps shared queue data in its server-side SQLite database and reads Visual FoxPro HIS data files as read-only sources.
 
 ## Windows setup
 
@@ -20,7 +20,8 @@ A small clinic LAN utility for displaying today's HIS registrations and managing
 4. Edit `config.json` for the clinic:
 
    - Set `his_data_path` to the HIS data share containing `RG011M1.DBF` and, when available, `PD001M1.DBF`.
-   - Add the known physician codes to `doctor_room_map`, mapping each code to room `1` or `2`. Unknown codes remain manageable in Unassigned.
+   - Physician filters are entered on the queue page under 一診 and 二診. The fields are shared by every workstation connected to this server and save when focus leaves the field. Leave a field blank when that room has no session. Each non-empty `CCDOC` code can belong to only one room.
+   - For an existing installation, `doctor_room_map` in `config.json` is used only to seed an empty room filter the first time the database starts. New installations can leave it empty and enter the codes on the page.
    - Set `patient_name_field` to the patient-name field in `PD001M1.DBF`; leave it empty to show chart numbers until it is known.
    - Set `bind_host` and `port` for the clinic host. `0.0.0.0` makes the service reachable on its LAN interfaces; keep the host inside the clinic LAN.
    - Keep `sqlite_path` and `log_path` on an application-owned local drive, outside the HIS data directory.
@@ -37,8 +38,11 @@ A small clinic LAN utility for displaying today's HIS registrations and managing
 
 On the server, open `http://127.0.0.1:8000`. From another clinic computer, open `http://<server-lan-ip>:8000`, replacing the address with the LAN IPv4 address of the Windows host. If another computer cannot connect, check that Windows Firewall allows the configured port on the clinic's private network.
 
-Room views use `/?room=1` and `/?room=2`; the default `/` view shows both rooms.
-The completed list stays collapsed until opened, and Unassigned patients can be sent to either room from the page. Room queues support presence, overdue, call/current/next, and reorder controls. Browsers check for shared queue changes every second; the server checks HIS data every 500 ms by default and runs a full recovery scan every 45 seconds.
+Room views use `/?room=1` for 一診 and `/?room=2` for 二診; the default `/` view shows both rooms. Room membership comes only from matching the HIS `CCDOC` value to the two shared filters. Encounters matching neither filter remain visible in a separate read-only section; staff cannot manually assign them. A blank room filter means that room has no active session and no queue.
+
+The completed list stays collapsed until opened. `診別未確認` is also collapsed by default and displays a record count in its heading. During testing, it remains visible even when the count is zero. Room queues support presence, overdue, and reorder controls; HIS handles patient calling.
+
+Browsers check for shared queue changes every second. A page reload waits while the session selector or a physician-code field is focused, and while a physician-code save is in progress. Changing a room filter saves that field when it loses focus; the latest saved value is shared across workstations. The server checks HIS data every 500 ms by default and runs a full recovery scan every 45 seconds.
 
 If the HIS share is briefly unavailable, the last saved queue remains visible with a sync warning while the server retries. New registrations receive a configurable 300-second NEW highlight. These actions only change the local SQLite queue state; they never write back to HIS files.
 

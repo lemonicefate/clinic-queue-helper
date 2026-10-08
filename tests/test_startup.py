@@ -31,7 +31,7 @@ def test_missing_config_command_explains_how_to_create_config(tmp_path):
 
     assert result.returncode != 0
     assert "config.example.json" in result.stderr
-    assert "doctor-to-room mapping" in result.stderr
+    assert "other local settings" in result.stderr
 
 
 def test_windows_launcher_reports_actionable_missing_config(tmp_path):
@@ -149,8 +149,8 @@ def test_running_service_serves_page_and_creates_app_files_outside_his(tmp_path)
             room_two_text = response.read().decode("utf-8")
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/queue", timeout=1) as response:
             queue_response = json.loads(response.read().decode("utf-8"))
-        assert 'aria-label="Room 2"' in room_two_text
-        assert 'aria-label="Room 1"' not in room_two_text
+        assert 'aria-label="二診"' in room_two_text
+        assert 'aria-label="一診"' not in room_two_text
         assert queue_response["his_stale"] is True
         assert (tmp_path / "state" / "queue.sqlite3").is_file()
         assert (tmp_path / "logs" / "app.log").is_file()

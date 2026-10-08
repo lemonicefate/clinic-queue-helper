@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 from dataclasses import replace
 from datetime import date
 
@@ -61,27 +60,24 @@ def create_config(tmp_path, doctor_room_map=None):
     return load_config(config_path)
 
 
-def test_reconcile_routes_by_doctor_and_unknown_doctors_to_unassigned(tmp_path, caplog):
+def test_reconcile_routes_by_ccdoc_and_keeps_unmatched_visible(tmp_path):
     from clinic_queue.queue import QueueStore
 
     config = create_config(tmp_path, {"DOC1": 1, "DOC2": 2})
     store = QueueStore(config.sqlite_path)
-
-    with caplog.at_level(logging.WARNING, logger="clinic_queue.queue"):
-        store.reconcile(
-            [
-                snapshot("one", "DOC1", patient_no="100001", queue_number="15"),
-                snapshot("two", "DOC2", patient_no="100002", queue_number="15"),
-                snapshot("unknown", "DOCX", patient_no="100003", queue_number="16"),
-            ],
-            config.doctor_room_map,
-        )
+    store.reconcile(
+        [
+            snapshot("one", "DOC1", patient_no="100001", queue_number="15"),
+            snapshot("two", "DOC2", patient_no="100002", queue_number="15"),
+            snapshot("unknown", "DOCX", patient_no="100003", queue_number="16"),
+        ],
+        config.doctor_room_map,
+    )
 
     board = store.get_board()
     assert [entry["encounter_key"] for entry in board["rooms"][1]["waiting"]] == ["one"]
     assert [entry["encounter_key"] for entry in board["rooms"][2]["waiting"]] == ["two"]
-    assert [entry["encounter_key"] for entry in board["unassigned"]] == ["unknown"]
-    assert "DOCX" in caplog.text
+    assert [entry["encounter_key"] for entry in board["unmatched"]["waiting"]] == ["unknown"]
 
 
 def test_present_encounters_append_per_room_and_away_stays_out_of_waiting_order(tmp_path):
@@ -109,22 +105,36 @@ def test_present_encounters_append_per_room_and_away_stays_out_of_waiting_order(
     assert [entry["queue_position"] for entry in board["rooms"][1]["waiting"]] == [1, 2]
 
 
-def test_staff_assignment_moves_unassigned_encounter_to_room_tail_and_survives_his_reads(tmp_path):
+def test_changing_shared_filter_moves_ccdoc_matches_and_preserves_local_state(tmp_path):
     from clinic_queue.queue import QueueStore
 
-    config = create_config(tmp_path, {"DOC1": 1})
+    config = create_config(tmp_path, {"DOC1": 1, "DOC2": 2})
     store = QueueStore(config.sqlite_path)
-    first = snapshot("first", "DOC1", patient_no="100001")
-    unknown = snapshot("unknown", "DOCX", patient_no="100002")
-    store.reconcile([first, unknown], config.doctor_room_map)
-
-    store.assign_room("unknown", 1)
-    store.reconcile([first, unknown], config.doctor_room_map)
+    store.initialize_room_doctor_codes(config.doctor_room_map)
+    store.reconcile(
+        [
+            snapshot("first", "DOC1", patient_no="100001"),
+            snapshot("new-match", "DOC1", patient_no="100002"),
+            snapshot("other-room", "DOC2", patient_no="100003"),
+        ],
+        config.doctor_room_map,
+    )
+    store.set_overdue("new-match", True)
+    store.reconcile(
+        [
+            snapshot("first", "DOC1", patient_no="100001"),
+            snapshot("new-match", "DOCX", patient_no="100002"),
+            snapshot("other-room", "DOC2", patient_no="100003"),
+        ],
+        config.doctor_room_map,
+    )
+    store.set_room_doctor_code(1, "DOCX")
 
     board = store.get_board()
-    assert [entry["encounter_key"] for entry in board["rooms"][1]["waiting"]] == ["first", "unknown"]
-    assert board["unassigned"] == []
-    assert board["rooms"][1]["waiting"][1]["room_override"] is True
+    assert [entry["encounter_key"] for entry in board["rooms"][1]["waiting"]] == ["new-match"]
+    assert board["rooms"][1]["waiting"][0]["overdue"] is True
+    assert [entry["encounter_key"] for entry in board["unmatched"]["waiting"]] == ["first"]
+    assert [entry["encounter_key"] for entry in board["rooms"][2]["waiting"]] == ["other-room"]
 
 
 def test_encounter_identity_survives_physical_record_number_changes(tmp_path):
@@ -148,7 +158,7 @@ def test_encounter_identity_survives_physical_record_number_changes(tmp_path):
     assert board["invalidated"] == []
 
 
-def test_page_renders_rooms_and_unassigned_assignment_controls(tmp_path):
+def test_page_renders_named_rooms_and_read_only_unmatched_records(tmp_path):
     config = create_config(tmp_path, {"DOC1": 1})
     app = create_app(config)
     app.state.queue_store.reconcile(
@@ -164,14 +174,15 @@ def test_page_renders_rooms_and_unassigned_assignment_controls(tmp_path):
     response = asyncio.run(fetch_home_page())
 
     assert response.status_code == 200
-    assert "Room 1" in response.text
-    assert "Room 2" in response.text
-    assert "Unassigned" in response.text
+    assert 'aria-label="一診"' in response.text
+    assert 'aria-label="二診"' in response.text
+    assert "未納入一診／二診篩選" in response.text
     assert "unknown-key" in response.text
-    assert "assign" in response.text.lower()
+    assert "指派" not in response.text
+    assert 'data-assign-room' not in response.text
 
 
-def test_assignment_api_places_unassigned_encounter_in_selected_room(tmp_path):
+def test_manual_room_assignment_api_is_absent(tmp_path):
     config = create_config(tmp_path, {})
     app = create_app(config)
     app.state.queue_store.reconcile([snapshot("unknown-key", "DOCX")], config.doctor_room_map)
@@ -186,6 +197,5 @@ def test_assignment_api_places_unassigned_encounter_in_selected_room(tmp_path):
 
     response = asyncio.run(assign())
 
-    assert response.status_code == 200
-    assert response.json()["room_id"] == 2
-    assert app.state.queue_store.get_board()["rooms"][2]["waiting"][0]["encounter_key"] == "unknown-key"
+    assert response.status_code == 404
+    assert app.state.queue_store.get_board()["unmatched"]["waiting"][0]["encounter_key"] == "unknown-key"

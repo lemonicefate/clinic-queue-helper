@@ -8,7 +8,6 @@
   "browser_refresh_ms": 1000,
   "new_highlight_seconds": 300,
   "room_count": 2,
-  "doctor_room_map": {},
   "patient_number_field": "NUM",
   "patient_name_field": "",
   "sqlite_path": "data/clinic_queue.sqlite3",

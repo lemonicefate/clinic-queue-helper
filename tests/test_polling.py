@@ -56,6 +56,7 @@ def make_poller(config, *, recovery_interval_seconds=45):
     from clinic_queue.polling import HISPoller
 
     store = QueueStore(config.sqlite_path)
+    store.initialize_room_doctor_codes(config.doctor_room_map)
     return HISPoller(config, store, recovery_interval_seconds=recovery_interval_seconds), store
 
 
@@ -139,13 +140,14 @@ def test_recovery_scan_discovers_a_same_count_record_added_outside_the_append_ra
 
 def test_restart_reconciliation_preserves_staff_state_and_prunes_other_days(tmp_path):
     config = create_config(tmp_path, {"DOC1": 1, "DOC2": 2})
-    make_source(config, [rg_row("100001"), rg_row("100002"), rg_row("100003")])
+    make_source(
+        config,
+        [rg_row("100001"), rg_row("100002", doctor="DOC2"), rg_row("100003", doctor="DOC2")],
+    )
     poller, store = make_poller(config)
     poller.initialize()
     store.set_presence("relkey:REL-100001", PresenceState.AWAY)
     store.set_overdue("relkey:REL-100002", True)
-    store.assign_room("relkey:REL-100002", 2)
-    store.assign_room("relkey:REL-100003", 2)
     store.reorder("relkey:REL-100003", 1)
     stale = replace(
         poller.tracked_by_recno[1],
@@ -171,7 +173,8 @@ def test_restart_reconciliation_preserves_staff_state_and_prunes_other_days(tmp_
     assert away["encounter_key"] == "relkey:REL-100001"
     assert away["presence_override"] is True
     assert room_two["encounter_key"] == "relkey:REL-100002"
-    assert room_two["room_override"] is True
+    assert room_two["room_id"] == 2
+    assert "room_override" not in room_two
     assert room_two["overdue"] is True
     assert "current_flag" not in room_two
     assert room_two["queue_status"] == "WAITING"
@@ -233,22 +236,41 @@ def test_doctor_change_invalidates_old_row_and_highlights_new_room_tail(tmp_path
     assert board["rooms"][2]["waiting"][0]["is_new"] is True
 
 
-def test_incremental_his_change_does_not_overwrite_manual_room_or_presence(tmp_path):
+def test_incremental_his_change_uses_ccdoc_filter_and_preserves_presence_and_overdue(tmp_path):
     config = create_config(tmp_path, {"DOC1": 1, "DOC2": 2})
     make_source(config, [rg_row("100001")])
     poller, store = make_poller(config)
     poller.initialize()
-    store.assign_room("relkey:REL-100001", 2)
-    store.set_presence("relkey:REL-100001", PresenceState.PRESENT)
+    store.set_presence("relkey:REL-100001", PresenceState.AWAY)
+    store.set_overdue("relkey:REL-100001", True)
 
     make_source(config, [rg_row("100001", doctor="DOC2", treat="C")])
     poller.poll_once()
 
-    entry = store.get_board()["rooms"][2]["waiting"][0]
+    entry = store.get_board()["rooms"][2]["away"][0]
     assert entry["doctor_code"] == "DOC2"
-    assert entry["room_override"] is True
-    assert entry["presence_status"] == "PRESENT"
+    assert entry["room_id"] == 2
+    assert "room_override" not in entry
+    assert entry["presence_status"] == "AWAY"
     assert entry["presence_override"] is True
+    assert entry["overdue"] is True
+
+
+def test_saved_room_filter_wins_over_stale_polling_configuration(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1, "DOC2": 2})
+    make_source(config, [rg_row("100001", doctor="DOC1")])
+    poller, store = make_poller(config)
+    poller.initialize()
+    store.set_room_doctor_code(1, "DOCX")
+
+    poller.poll_once()
+
+    board = store.get_board()
+    assert board["room_doctor_codes"] == {1: "DOCX", 2: "DOC2"}
+    assert board["rooms"][1]["waiting"] == []
+    assert [entry["encounter_key"] for entry in board["unmatched"]["waiting"]] == [
+        "relkey:REL-100001",
+    ]
 
 
 def test_new_highlight_expires_and_manual_reorder_clears_it(tmp_path):

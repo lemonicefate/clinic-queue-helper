@@ -101,6 +101,14 @@ class QueueStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS room_doctor_filter (
+                    room_id INTEGER PRIMARY KEY CHECK (room_id IN (1, 2)),
+                    doctor_code TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
             self._migrate_encounter_state(connection)
 
     @contextmanager
@@ -120,6 +128,149 @@ class QueueStore:
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    @staticmethod
+    def _room_doctor_codes(connection: sqlite3.Connection) -> dict[int, str]:
+        codes = {1: "", 2: ""}
+        rows = connection.execute(
+            "SELECT room_id, doctor_code FROM room_doctor_filter"
+        ).fetchall()
+        for row in rows:
+            codes[int(row["room_id"])] = str(row["doctor_code"])
+        return codes
+
+    @staticmethod
+    def _doctor_room_map(codes: Mapping[int, str]) -> dict[str, int]:
+        return {
+            code: room_id
+            for room_id, raw_code in codes.items()
+            if (code := str(raw_code).strip(" \x00"))
+        }
+
+    def initialize_room_doctor_codes(self, legacy_map: Mapping[str, int]) -> None:
+        """Seed shared room filters once from the previous static configuration."""
+        legacy_by_room: dict[int, list[str]] = {1: [], 2: []}
+        for raw_code, room_id in legacy_map.items():
+            code = str(raw_code).strip(" \x00")
+            if code and room_id in legacy_by_room:
+                legacy_by_room[room_id].append(code)
+
+        timestamp = self._now()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for room_id in (1, 2):
+                exists = connection.execute(
+                    "SELECT 1 FROM room_doctor_filter WHERE room_id = ?",
+                    (room_id,),
+                ).fetchone()
+                if exists is not None:
+                    continue
+                candidates = legacy_by_room[room_id]
+                code = candidates[0] if len(candidates) == 1 else ""
+                if len(candidates) > 1:
+                    logger.warning(
+                        "Legacy configuration has multiple physician codes for room %s; "
+                        "leave its shared filter blank for manual entry",
+                        room_id,
+                    )
+                connection.execute(
+                    "INSERT INTO room_doctor_filter (room_id, doctor_code) VALUES (?, ?)",
+                    (room_id, code),
+                )
+            codes = self._room_doctor_codes(connection)
+            self._remap_room_assignments(
+                connection,
+                self._doctor_room_map(codes),
+                timestamp,
+            )
+
+    def get_room_doctor_codes(self) -> dict[int, str]:
+        with self._connection() as connection:
+            return self._room_doctor_codes(connection)
+
+    def get_doctor_room_map(self) -> dict[str, int]:
+        return self._doctor_room_map(self.get_room_doctor_codes())
+
+    def set_room_doctor_code(self, room_id: int, doctor_code: str) -> dict[int, str]:
+        """Save one shared room filter and move records to their CCDOC-derived room."""
+        if type(room_id) is not int or room_id not in (1, 2):
+            raise QueueError("room_id must be 1 or 2.")
+        if not isinstance(doctor_code, str):
+            raise QueueError("doctor_code must be a string.")
+        code = doctor_code.strip(" \x00")
+        timestamp = self._now()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            other_room = 2 if room_id == 1 else 1
+            other = connection.execute(
+                "SELECT doctor_code FROM room_doctor_filter WHERE room_id = ?",
+                (other_room,),
+            ).fetchone()
+            if code and other is not None and str(other["doctor_code"]) == code:
+                raise QueueError("This physician code is already selected for the other room.")
+
+            connection.execute(
+                """
+                INSERT INTO room_doctor_filter (room_id, doctor_code) VALUES (?, ?)
+                ON CONFLICT(room_id) DO UPDATE SET doctor_code = excluded.doctor_code
+                """,
+                (room_id, code),
+            )
+            codes = self._room_doctor_codes(connection)
+            self._remap_room_assignments(
+                connection,
+                self._doctor_room_map(codes),
+                timestamp,
+            )
+            return codes
+
+    @staticmethod
+    def _remap_room_assignments(
+        connection: sqlite3.Connection,
+        doctor_room_map: Mapping[str, int],
+        timestamp: str,
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT encounter_key, doctor_code, room_id, time_kind, presence_status,
+                   queue_status, queue_position
+            FROM encounter_state
+            ORDER BY CASE WHEN room_id IS NULL THEN 3 ELSE room_id END,
+                     CASE WHEN queue_position IS NULL THEN 1 ELSE 0 END,
+                     queue_position, created_at, encounter_key
+            """
+        ).fetchall()
+        for row in rows:
+            code = str(row["doctor_code"]).strip(" \x00")
+            mapped_room = doctor_room_map.get(code)
+            if mapped_room not in (1, 2):
+                mapped_room = None
+            old_room = row["room_id"]
+            time_kind = row["time_kind"]
+            is_waiting_candidate = (
+                mapped_room is not None
+                and time_kind is not None
+                and row["presence_status"] == PresenceState.PRESENT.value
+                and row["queue_status"] not in ("COMPLETED", "INVALIDATED")
+            )
+            if not is_waiting_candidate:
+                position = None
+            elif old_room == mapped_room and row["queue_position"] is not None:
+                position = int(row["queue_position"])
+            else:
+                assert mapped_room is not None
+                position = QueueStore._new_room_position(
+                    connection, QueueScope(mapped_room, ClinicSession(int(time_kind)))
+                )
+            connection.execute(
+                """
+                UPDATE encounter_state
+                SET room_id = ?, queue_position = ?, room_override = 0, updated_at = ?
+                WHERE encounter_key = ?
+                """,
+                (mapped_room, position, timestamp, row["encounter_key"]),
+            )
+        QueueStore._normalize_all_room_positions(connection, timestamp)
 
     @staticmethod
     def _migrate_encounter_state(connection: sqlite3.Connection) -> None:
@@ -148,7 +299,7 @@ class QueueStore:
                 """
                 UPDATE encounter_state
                 SET time_kind = ?, his_state = ?, queue_status = ?, presence_status = ?,
-                    queue_position = ?,
+                    queue_position = ?, room_override = 0,
                     current_flag = 0, updated_at = ?
                 WHERE encounter_key = ?
                 """,
@@ -228,24 +379,33 @@ class QueueStore:
     def reconcile(
         self,
         encounters: Sequence[EncounterSnapshot],
-        doctor_room_map: Mapping[str, int],
+        doctor_room_map: Mapping[str, int] | None = None,
         *,
         new_highlight_seconds: int = 300,
         clinic_date: date | None = None,
         unreadable_recno: Sequence[int] = (),
     ) -> None:
-        """Upsert HIS state, preserve staff overrides, and optionally prune a full-day scan."""
+        """Upsert HIS state using the latest shared room filters and preserve local state."""
         timestamp = self._now()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            saved_filters = connection.execute(
+                "SELECT room_id, doctor_code FROM room_doctor_filter"
+            ).fetchall()
+            if saved_filters:
+                saved_codes = self._room_doctor_codes(connection)
+                doctor_room_map = self._doctor_room_map(saved_codes)
+            elif doctor_room_map is None:
+                doctor_room_map = {}
+
             current_keys = {encounter.encounter_key for encounter in encounters}
             for encounter in encounters:
                 time_kind = normalize_time_kind(encounter.raw_his.get("TIME_KIND"))
                 mapped_room = doctor_room_map.get(encounter.doctor_code)
                 if mapped_room not in (1, 2):
                     mapped_room = None
-                    logger.warning(
-                        "No room mapping for doctor %r; encounter %s is Unassigned",
+                    logger.debug(
+                        "Physician code %r for encounter %s is outside the active room filters",
                         encounter.doctor_code,
                         encounter.encounter_key,
                     )
@@ -278,9 +438,9 @@ class QueueStore:
                         ).isoformat(timespec="seconds")
                     reordered_at = None
                 else:
-                    room_override = int(existing["room_override"])
+                    room_override = 0
                     presence_override = int(existing["presence_override"])
-                    room_id = existing["room_id"] if room_override else mapped_room
+                    room_id = mapped_room
                     presence = (
                         PresenceState(existing["presence_status"])
                         if presence_override
@@ -398,62 +558,6 @@ class QueueStore:
 
             self._normalize_all_room_positions(connection, timestamp)
 
-    def assign_room(self, encounter_key: str, room_id: int) -> dict[str, Any]:
-        """Set a staff room override and append a present patient to that room's tail."""
-        if room_id not in (1, 2):
-            raise QueueError("room_id must be 1 or 2.")
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM encounter_state WHERE encounter_key = ?",
-                (encounter_key,),
-            ).fetchone()
-            if row is None:
-                raise QueueError(f"Encounter not found: {encounter_key}")
-            if str(row["queue_status"]) in ("COMPLETED", "INVALIDATED"):
-                raise QueueError("Completed or invalidated encounters cannot be assigned.")
-            scope = (
-                QueueScope(room_id, ClinicSession(int(row["time_kind"])))
-                if row["time_kind"] is not None
-                else None
-            )
-            position = (
-                self._new_room_position(connection, scope)
-                if row["presence_status"] == PresenceState.PRESENT.value and scope is not None
-                else None
-            )
-            connection.execute(
-                """
-                UPDATE encounter_state
-                SET room_id = ?, room_override = 1, queue_position = ?, updated_at = ?
-                WHERE encounter_key = ?
-                """,
-                (room_id, position, self._now(), encounter_key),
-            )
-            timestamp = self._now()
-            old_room_id = row["room_id"]
-            if scope is not None:
-                if old_room_id in (1, 2):
-                    self._normalize_room_positions(
-                        connection,
-                        QueueScope(int(old_room_id), scope.time_kind),
-                        timestamp,
-                    )
-                self._normalize_room_positions(connection, scope, timestamp)
-            updated = connection.execute(
-                "SELECT * FROM encounter_state WHERE encounter_key = ?",
-                (encounter_key,),
-            ).fetchone()
-            self._log_action(
-                connection,
-                encounter_key,
-                "assign_room",
-                row["room_id"],
-                room_id,
-            )
-            logger.info("Assigned encounter %s to Room %s", encounter_key, room_id)
-            return self._row_to_dict(updated)
-
     @staticmethod
     def _require_active_row(connection: sqlite3.Connection, encounter_key: str) -> sqlite3.Row:
         row = connection.execute(
@@ -464,6 +568,8 @@ class QueueStore:
             raise QueueError(f"Encounter not found: {encounter_key}")
         if str(row["queue_status"]) in ("COMPLETED", "INVALIDATED"):
             raise QueueError("Completed or invalidated encounters cannot be changed.")
+        if row["room_id"] is None:
+            raise QueueError("Encounters outside the physician filters are read-only.")
         return row
 
     @staticmethod
@@ -473,7 +579,9 @@ class QueueStore:
             or row["time_kind"] is None
             or row["presence_status"] != PresenceState.PRESENT.value
         ):
-            raise QueueError("Only present, assigned encounters with a known clinic session can be reordered.")
+            raise QueueError(
+                "Only present encounters matched to a room with a known clinic session can be reordered."
+            )
         return QueueScope(int(row["room_id"]), ClinicSession(int(row["time_kind"])))
 
     @staticmethod
@@ -680,7 +788,7 @@ class QueueStore:
         entry["queue_position"] = (
             None if entry["queue_position"] is None else int(entry["queue_position"])
         )
-        entry["room_override"] = bool(entry["room_override"])
+        entry.pop("room_override", None)
         entry["presence_override"] = bool(entry["presence_override"])
         entry["overdue"] = bool(entry["overdue"])
         entry.pop("current_flag", None)
@@ -700,7 +808,7 @@ class QueueStore:
         return entry
 
     def get_board(self, time_kind: ClinicSession | int | None = None) -> dict[str, Any]:
-        """Return one session's queues and a separate group for uncertain HIS sessions."""
+        """Return doctor-filtered room queues and separate diagnostic groups."""
         selected_session = normalize_time_kind(time_kind) if time_kind is not None else None
         if time_kind is not None and selected_session is None:
             raise QueueError("time_kind must be 1, 2, or 3.")
@@ -711,20 +819,25 @@ class QueueStore:
                 2: {"waiting": [], "away": []},
             }
 
+        def empty_unmatched() -> dict[str, list[dict[str, Any]]]:
+            return {"waiting": [], "away": [], "completed": [], "invalidated": []}
+
         board: dict[str, Any] = {
             "selected_time_kind": None if selected_session is None else int(selected_session),
+            "room_doctor_codes": {1: "", 2: ""},
             "rooms": empty_rooms(),
-            "unassigned": [],
+            "unmatched": empty_unmatched(),
             "completed": [],
             "invalidated": [],
             "unconfirmed": {
                 "rooms": empty_rooms(),
-                "unassigned": [],
+                "unmatched": empty_unmatched(),
                 "completed": [],
                 "invalidated": [],
             },
         }
         with self._connection() as connection:
+            board["room_doctor_codes"] = self._room_doctor_codes(connection)
             rows = connection.execute(
                 """
                 SELECT * FROM encounter_state
@@ -736,18 +849,23 @@ class QueueStore:
 
         for row in rows:
             entry = self._row_to_dict(row)
-            if entry["time_kind"] is not None:
-                if selected_session is not None and entry["time_kind"] != int(selected_session):
+            unknown_session = entry["time_kind"] is None
+            if not unknown_session and selected_session is not None:
+                if entry["time_kind"] != int(selected_session):
                     continue
-                group = board
-            else:
-                group = board["unconfirmed"]
+            group = board["unconfirmed"] if unknown_session else board
+            destination = group["unmatched"] if entry["room_id"] is None else None
             if entry["queue_status"] == "COMPLETED":
-                group["completed"].append(entry)
+                (destination or group)["completed"].append(entry)
             elif entry["queue_status"] == "INVALIDATED":
-                group["invalidated"].append(entry)
-            elif entry["room_id"] is None:
-                group["unassigned"].append(entry)
+                (destination or group)["invalidated"].append(entry)
+            elif destination is not None:
+                status = (
+                    "away"
+                    if entry["presence_status"] == PresenceState.AWAY.value
+                    else "waiting"
+                )
+                destination[status].append(entry)
             elif entry["presence_status"] == PresenceState.AWAY.value:
                 group["rooms"][entry["room_id"]]["away"].append(entry)
             else:

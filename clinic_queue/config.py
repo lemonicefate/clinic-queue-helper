@@ -66,7 +66,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     if not path.is_file():
         raise ConfigurationError(
             f"Configuration file not found: {path}. Copy config.example.json to config.json, "
-            "then edit the HIS path and doctor-to-room mapping."
+            "then edit the HIS path and other local settings."
         )
 
     try:
@@ -113,7 +113,9 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         or room not in (1, 2)
         for code, room in doctor_room_map.items()
     ):
-        raise ConfigurationError("doctor_room_map must map non-empty doctor codes to room 1 or 2.")
+        raise ConfigurationError(
+            "legacy doctor_room_map must map non-empty doctor codes to room 1 or 2."
+        )
 
     patient_number_field = settings.get("patient_number_field", "NUM")
     patient_name_field = settings.get("patient_name_field", "")

@@ -46,24 +46,6 @@ def test_presence_and_overdue_changes_are_saved_and_away_leaves_waiting_order(tm
     assert board["rooms"][1]["waiting"][2]["presence_override"] is True
 
 
-def test_room_assignment_compacts_both_queues_and_reentry_appends_at_tail(tmp_path):
-    _, store = ready_store(tmp_path)
-
-    store.assign_room("two", 2)
-    board = store.get_board()
-    assert [entry["queue_position"] for entry in board["rooms"][1]["waiting"]] == [1, 2]
-    assert [entry["queue_position"] for entry in board["rooms"][2]["waiting"]] == [1]
-
-    store.assign_room("two", 1)
-    board = store.get_board()
-    assert [entry["encounter_key"] for entry in board["rooms"][1]["waiting"]] == [
-        "one",
-        "three",
-        "two",
-    ]
-    assert [entry["queue_position"] for entry in board["rooms"][1]["waiting"]] == [1, 2, 3]
-
-
 def test_reorder_and_up_down_actions_preserve_explicit_room_order(tmp_path):
     _, store = ready_store(tmp_path)
 
@@ -242,14 +224,6 @@ def test_room_session_order_actions_do_not_change_other_groups(tmp_path):
         ):
             noon_browser.cookies.set("clinic_session", "2")
             await morning_browser.post(
-                "/api/assign",
-                json={"encounter_key": "morning-extra", "room_id": 1},
-            )
-            await morning_browser.post(
-                "/api/action",
-                json={"encounter_key": "morning-extra", "action": "up"},
-            )
-            await morning_browser.post(
                 "/api/reorder",
                 json={"encounter_key": "morning-two", "position": 1},
             )
@@ -263,9 +237,11 @@ def test_room_session_order_actions_do_not_change_other_groups(tmp_path):
     assert [entry["encounter_key"] for entry in morning["rooms"]["1"]["waiting"]] == [
         "morning-two",
         "morning-one",
+    ]
+    assert [entry["queue_position"] for entry in morning["rooms"]["1"]["waiting"]] == [1, 2]
+    assert [entry["encounter_key"] for entry in morning["unmatched"]["waiting"]] == [
         "morning-extra",
     ]
-    assert [entry["queue_position"] for entry in morning["rooms"]["1"]["waiting"]] == [1, 2, 3]
     assert [entry["encounter_key"] for entry in noon["rooms"]["1"]["waiting"]] == [
         "noon-one",
         "noon-two",
