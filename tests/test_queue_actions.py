@@ -297,6 +297,132 @@ def test_drag_drop_reorder_api_accepts_target_position(tmp_path):
     ]
 
 
+def test_drag_reorder_inserts_relative_to_target_and_persists_after_restart(tmp_path):
+    config, _ = ready_store(tmp_path)
+    app = create_app(config)
+
+    async def apply_drop_positions():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            before = await client.post(
+                "/api/reorder",
+                json={
+                    "encounter_key": "one",
+                    "target_encounter_key": "three",
+                    "insert_after": False,
+                },
+            )
+            after = await client.post(
+                "/api/reorder",
+                json={
+                    "encounter_key": "one",
+                    "target_encounter_key": "three",
+                    "insert_after": True,
+                },
+            )
+            return before, after
+
+    before, after = asyncio.run(apply_drop_positions())
+
+    assert before.status_code == 200
+    assert [entry["encounter_key"] for entry in before.json()["rooms"]["1"]["waiting"]] == [
+        "two",
+        "one",
+        "three",
+    ]
+    assert after.status_code == 200
+    assert [entry["encounter_key"] for entry in after.json()["rooms"]["1"]["waiting"]] == [
+        "two",
+        "three",
+        "one",
+    ]
+    restarted = QueueStore(config.sqlite_path)
+    assert [entry["encounter_key"] for entry in restarted.get_board()["rooms"][1]["waiting"]] == [
+        "two",
+        "three",
+        "one",
+    ]
+
+
+def test_drag_reorder_api_rejects_target_from_another_session(tmp_path):
+    config, _ = ready_store(tmp_path)
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("one", "DOC1", patient_no="100001"),
+            snapshot("two", "DOC1", patient_no="100002"),
+            snapshot("three", "DOC1", patient_no="100003"),
+            snapshot("noon", "DOC1", patient_no="100004", time_kind="2"),
+        ],
+        config.doctor_room_map,
+    )
+
+    async def drop_across_sessions():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/reorder",
+                json={
+                    "encounter_key": "one",
+                    "target_encounter_key": "noon",
+                    "insert_after": False,
+                },
+            )
+
+    response = asyncio.run(drop_across_sessions())
+
+    assert response.status_code == 400
+
+
+def test_waiting_cards_are_keyboard_focusable(tmp_path):
+    config, _ = ready_store(tmp_path)
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [snapshot("one", "DOC1", patient_no="100001")],
+        config.doctor_room_map,
+    )
+
+    async def get_board():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.get("/")
+
+    response = asyncio.run(get_board())
+
+    assert response.status_code == 200
+    card = response.text.split('data-encounter-key="one"', maxsplit=1)[1].split(">", maxsplit=1)[0]
+    assert 'tabindex="0"' in card
+
+
+def test_reorder_api_rejects_preregistered_encounters(tmp_path):
+    config, _ = ready_store(tmp_path)
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("waiting", "DOC1", patient_no="100001"),
+            snapshot(
+                "preregistered",
+                "DOC1",
+                presence=PresenceState.AWAY,
+                state=HISState.PREREGISTERED,
+                patient_no="100002",
+            ),
+        ],
+        config.doctor_room_map,
+    )
+    async def reorder_preregistered():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/reorder",
+                json={"encounter_key": "preregistered", "position": 1},
+            )
+
+    response = asyncio.run(reorder_preregistered())
+
+    assert response.status_code == 400
+
+
 def test_browser_action_api_keeps_local_controls_without_calling_actions(tmp_path):
     config, _ = ready_store(tmp_path)
     app = create_app(config)

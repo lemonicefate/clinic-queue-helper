@@ -69,8 +69,21 @@
       .patient { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .65rem 1rem; margin: .45rem 0; padding: .8rem .85rem; border: 1px solid #e0e8e8; border-radius: .7rem; background: var(--surface); }
       .patient:hover { border-color: #c5d6d6; }
       .patient.new-patient { border-color: #e7c66b; background: #fff9e9; }
-      .waiting-patient { cursor: grab; }
+      .waiting-patient { position: relative; cursor: grab; }
       .waiting-patient:active { cursor: grabbing; }
+      .waiting-patient.drop-before::before,
+      .waiting-patient.drop-after::after {
+        position: absolute;
+        right: .25rem;
+        left: .25rem;
+        height: 3px;
+        border-radius: 999px;
+        background: var(--accent);
+        content: "";
+        pointer-events: none;
+      }
+      .waiting-patient.drop-before::before { top: -.27rem; }
+      .waiting-patient.drop-after::after { bottom: -.27rem; }
       .patient-main { min-width: 0; }
       .patient-identity { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem .55rem; }
       .patient strong { font-size: 1.04rem; font-variant-numeric: tabular-nums; }
@@ -161,7 +174,7 @@
       {% macro patient_card(encounter, order=none, read_only=false) %}
         <article class="patient{% if encounter.is_new %} new-patient{% endif %}{% if order is not none %} waiting-patient{% endif %}"
                  data-encounter-key="{{ encounter.encounter_key }}"
-                 {% if order is not none %}draggable="true" data-room-id="{{ encounter.room_id }}" data-time-kind="{{ encounter.time_kind }}" data-position="{{ order }}"{% endif %}>
+                 {% if order is not none %}tabindex="0" draggable="true" data-room-id="{{ encounter.room_id }}" data-time-kind="{{ encounter.time_kind }}" data-position="{{ order }}"{% endif %}>
           <div class="patient-main">
             <div class="patient-identity">
               <strong>{% if order is not none %}{{ order }}. {% endif %}#{{ encounter.queue_number }} {{ encounter.patient_name }}</strong>
@@ -345,8 +358,11 @@
       let pendingRefresh = false;
       let pendingRoomCodeSaves = 0;
       let pollInProgress = false;
+      let draggedPatient = null;
+      let pendingReorderRequests = 0;
       const clinicSessionPicker = document.querySelector("#clinic-session");
       const registrationDetailsStorageKey = "clinicQueue.openRegistrationDetails.v1";
+      const reorderedFocusStorageKey = "clinicQueue.reorderedFocus.v1";
 
       function loadOpenRegistrationDetails() {
         try {
@@ -398,7 +414,7 @@
       });
 
       function maybeApplyPendingRefresh() {
-        if (!pendingRefresh || pendingRoomCodeSaves > 0) return;
+        if (!pendingRefresh || pendingRoomCodeSaves > 0 || draggedPatient || pendingReorderRequests > 0) return;
         const active = document.activeElement;
         if (active?.matches("[data-room-doctor-code]")) return;
         if (active === clinicSessionPicker) return;
@@ -409,6 +425,39 @@
       function requestPageRefresh() {
         pendingRefresh = true;
         maybeApplyPendingRefresh();
+      }
+
+      function restoreReorderedFocus() {
+        try {
+          const encounterKey = sessionStorage.getItem(reorderedFocusStorageKey);
+          if (!encounterKey) return;
+          sessionStorage.removeItem(reorderedFocusStorageKey);
+          const card = Array.from(document.querySelectorAll(".waiting-patient"))
+            .find((item) => item.dataset.encounterKey === encounterKey);
+          card?.focus({ preventScroll: true });
+        } catch (_) {
+          // Focus restoration is best-effort if this browser blocks session storage.
+        }
+      }
+
+      async function submitQueueChange(path, body, focusEncounterKey = null) {
+        if (focusEncounterKey) {
+          try {
+            sessionStorage.setItem(reorderedFocusStorageKey, focusEncounterKey);
+          } catch (_) {
+            // The order still saves if this browser blocks session storage.
+          }
+        }
+        pendingReorderRequests += 1;
+        try {
+          await postJson(path, body);
+          requestPageRefresh();
+        } catch (error) {
+          showActionError(error.message);
+        } finally {
+          pendingReorderRequests -= 1;
+          maybeApplyPendingRefresh();
+        }
       }
 
       window.setInterval(async () => {
@@ -528,34 +577,76 @@
         });
       });
 
-      let draggedPatient = null;
+      function clearDropIndicators() {
+        document.querySelectorAll(".drop-before, .drop-after").forEach((card) => {
+          card.classList.remove("drop-before", "drop-after");
+        });
+      }
+
+      function canDropOn(source, target) {
+        return source !== target
+          && source.dataset.roomId === target.dataset.roomId
+          && source.dataset.timeKind === target.dataset.timeKind;
+      }
+
+      function updateDropIndicator(card, event) {
+        clearDropIndicators();
+        if (!draggedPatient || !canDropOn(draggedPatient, card)) return;
+        const bounds = card.getBoundingClientRect();
+        const insertAfter = event.clientY >= bounds.top + bounds.height / 2;
+        card.classList.add(insertAfter ? "drop-after" : "drop-before");
+      }
+
       document.querySelectorAll(".waiting-patient").forEach((card) => {
-        card.addEventListener("dragstart", () => { draggedPatient = card; });
-        card.addEventListener("dragend", () => { draggedPatient = null; });
+        card.addEventListener("keydown", (event) => {
+          if (event.target !== card || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+          event.preventDefault();
+          const currentPosition = Number(card.dataset.position);
+          const nextPosition = currentPosition + (event.key === "ArrowUp" ? -1 : 1);
+          const lastPosition = document.querySelectorAll(
+            `.waiting-patient[data-room-id="${card.dataset.roomId}"][data-time-kind="${card.dataset.timeKind}"]`,
+          ).length;
+          if (nextPosition < 1 || nextPosition > lastPosition) return;
+          void submitQueueChange(
+            "/api/action",
+            {
+              encounter_key: card.dataset.encounterKey,
+              action: event.key === "ArrowUp" ? "up" : "down",
+            },
+            card.dataset.encounterKey,
+          );
+        });
+        card.addEventListener("dragstart", () => {
+          draggedPatient = card;
+          clearDropIndicators();
+        });
+        card.addEventListener("dragend", () => {
+          draggedPatient = null;
+          clearDropIndicators();
+          maybeApplyPendingRefresh();
+        });
         card.addEventListener("dragover", (event) => {
-          if (!draggedPatient) return;
-          if (draggedPatient.dataset.roomId !== card.dataset.roomId) return;
-          if (draggedPatient.dataset.timeKind !== card.dataset.timeKind) return;
+          updateDropIndicator(card, event);
+          if (!draggedPatient || !canDropOn(draggedPatient, card)) return;
           event.preventDefault();
         });
         card.addEventListener("drop", async (event) => {
           event.preventDefault();
           const source = draggedPatient;
-          if (!source || source === card) return;
-          if (source.dataset.roomId !== card.dataset.roomId) return;
-          if (source.dataset.timeKind !== card.dataset.timeKind) return;
+          if (!source || !canDropOn(source, card)) return;
+          const bounds = card.getBoundingClientRect();
+          const insertAfter = event.clientY >= bounds.top + bounds.height / 2;
           draggedPatient = null;
-          try {
-            await postJson("/api/reorder", {
-              encounter_key: source.dataset.encounterKey,
-              position: Number(card.dataset.position),
-            });
-            requestPageRefresh();
-          } catch (error) {
-            showActionError(error.message);
-          }
+          clearDropIndicators();
+          await submitQueueChange("/api/reorder", {
+            encounter_key: source.dataset.encounterKey,
+            target_encounter_key: card.dataset.encounterKey,
+            insert_after: insertAfter,
+          });
         });
       });
+
+      restoreReorderedFocus();
     </script>
   </body>
 </html>
