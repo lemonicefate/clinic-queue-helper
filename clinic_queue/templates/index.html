@@ -181,21 +181,21 @@
               <div class="patient-badges">
                 {% if encounter.is_new %}<span class="badge badge-new">NEW</span>{% endif %}
                 {% if encounter.overdue %}<span class="badge badge-overdue">過號</span>{% endif %}
-                {% if encounter.presence_status == 'AWAY' %}<span class="badge badge-away">暫未到診</span>{% endif %}
+                {% if encounter.queue_status == 'WAITING' and encounter.presence_status == 'AWAY' %}<span class="badge badge-away">已掛暫離</span>{% endif %}
                 {% if encounter.time_kind is none %}<span class="badge badge-unconfirmed">診別未確認</span>{% endif %}
                 {% if encounter.queue_status == 'WAITING' %}<span class="badge">候診</span>{% endif %}
-                {% if encounter.queue_status == 'PREREGISTERED' %}<span class="badge">未報到</span>{% endif %}
+                {% if encounter.queue_status == 'PREREGISTERED' %}<span class="badge">已約未到</span>{% endif %}
                 {% if encounter.queue_status == 'COMPLETED' %}<span class="badge">完成</span>{% endif %}
               </div>
             </div>
             <span class="secondary">病歷號 {{ encounter.patient_no }}</span>
           </div>
-          {% if not read_only and encounter.queue_status not in ('COMPLETED', 'INVALIDATED') %}
+          {% if not read_only and encounter.queue_status == 'WAITING' %}
             <div class="queue-actions" aria-label="候診操作">
               {% if encounter.presence_status == 'AWAY' %}
-                <button type="button" data-action="present" data-encounter-key="{{ encounter.encounter_key }}">已到診</button>
+                <button type="button" data-action="present" data-encounter-key="{{ encounter.encounter_key }}">回候診</button>
               {% else %}
-                <button type="button" data-action="away" data-encounter-key="{{ encounter.encounter_key }}">暫未到診</button>
+                <button type="button" data-action="away" data-encounter-key="{{ encounter.encounter_key }}">暫離</button>
               {% endif %}
               {% if encounter.room_id and encounter.presence_status == 'PRESENT' %}
                 {% if encounter.time_kind is not none %}
@@ -223,7 +223,8 @@
               <h2>{{ room_label(room_id) }}</h2>
               <div class="room-totals" aria-label="{{ room_label(room_id) }}人數">
                 <span class="room-total"><strong>{{ board.rooms[room_id].waiting | length }}</strong>候診</span>
-                <span class="room-total"><strong>{{ board.rooms[room_id].away | length }}</strong>暫未到診</span>
+                <span class="room-total"><strong>{{ board.rooms[room_id].away | length }}</strong>已掛暫離</span>
+                <span class="room-total"><strong>{{ board.rooms[room_id].preregistered | length }}</strong>已約未到</span>
               </div>
             </header>
             <div class="room-code-field">
@@ -245,11 +246,17 @@
             {% else %}
               <p class="empty">目前沒有候診病人</p>
             {% endfor %}
-            <h3><span>暫未到診</span><span class="section-count">{{ board.rooms[room_id].away | length }}</span></h3>
+            <h3><span>已掛暫離</span><span class="section-count">{{ board.rooms[room_id].away | length }}</span></h3>
             {% for encounter in board.rooms[room_id].away %}
               {{ patient_card(encounter) }}
             {% else %}
-              <p class="empty">目前沒有暫未到診病人</p>
+              <p class="empty">目前沒有已掛暫離病人</p>
+            {% endfor %}
+            <h3><span>已約未到</span><span class="section-count">{{ board.rooms[room_id].preregistered | length }}</span></h3>
+            {% for encounter in board.rooms[room_id].preregistered %}
+              {{ patient_card(encounter) }}
+            {% else %}
+              <p class="empty">目前沒有已約未到病人</p>
             {% endfor %}
           </section>
         {% endfor %}
@@ -263,11 +270,17 @@
         {% else %}
           <p class="empty">目前沒有未納入篩選的候診掛號</p>
         {% endfor %}
-        <h3>暫未到診</h3>
+        <h3>已掛暫離</h3>
         {% for encounter in board.unmatched.away %}
           {{ patient_card(encounter, read_only=true) }}
         {% else %}
-          <p class="empty">目前沒有未納入篩選的暫未到診掛號</p>
+          <p class="empty">目前沒有未納入篩選的已掛暫離掛號</p>
+        {% endfor %}
+        <h3>已約未到</h3>
+        {% for encounter in board.unmatched.preregistered %}
+          {{ patient_card(encounter, read_only=true) }}
+        {% else %}
+          <p class="empty">目前沒有未納入篩選的已約未到掛號</p>
         {% endfor %}
         <h3>已完成</h3>
         {% for encounter in board.unmatched.completed %}
@@ -286,11 +299,17 @@
           {% else %}
             <p class="empty">目前沒有診別未確認的候診病人</p>
           {% endfor %}
-          <h3>{{ room_label(room_id) }} · 暫未到診</h3>
+          <h3>{{ room_label(room_id) }} · 已掛暫離</h3>
           {% for encounter in board.unconfirmed.rooms[room_id].away %}
             {{ patient_card(encounter) }}
           {% else %}
-            <p class="empty">目前沒有診別未確認的暫未到診病人</p>
+            <p class="empty">目前沒有診別未確認的已掛暫離病人</p>
+          {% endfor %}
+          <h3>{{ room_label(room_id) }} · 已約未到</h3>
+          {% for encounter in board.unconfirmed.rooms[room_id].preregistered %}
+            {{ patient_card(encounter) }}
+          {% else %}
+            <p class="empty">目前沒有診別未確認的已約未到病人</p>
           {% endfor %}
         {% endfor %}
         <h3>未納入一診／二診篩選 · 候診</h3>
@@ -299,8 +318,14 @@
         {% else %}
           <p class="empty">目前沒有此類掛號</p>
         {% endfor %}
-        <h3>未納入一診／二診篩選 · 暫未到診</h3>
+        <h3>未納入一診／二診篩選 · 已掛暫離</h3>
         {% for encounter in board.unconfirmed.unmatched.away %}
+          {{ patient_card(encounter, read_only=true) }}
+        {% else %}
+          <p class="empty">目前沒有此類掛號</p>
+        {% endfor %}
+        <h3>未納入一診／二診篩選 · 已約未到</h3>
+        {% for encounter in board.unconfirmed.unmatched.preregistered %}
           {{ patient_card(encounter, read_only=true) }}
         {% else %}
           <p class="empty">目前沒有此類掛號</p>

@@ -104,10 +104,10 @@ def create_app(config: AppConfig) -> FastAPI:
         unconfirmed_count = sum(
             len(board["unconfirmed"]["rooms"][room_id][status])
             for room_id in visible_room_ids
-            for status in ("waiting", "away")
+            for status in ("waiting", "away", "preregistered")
         ) + sum(
             len(board["unconfirmed"]["unmatched"][status])
-            for status in ("waiting", "away", "completed")
+            for status in ("waiting", "away", "preregistered", "completed")
         ) + len(unconfirmed_completed_encounters)
         return templates.TemplateResponse(
             request=request,
