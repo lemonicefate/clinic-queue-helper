@@ -22,7 +22,7 @@ A small clinic LAN utility for displaying today's HIS registrations and managing
    - Set `his_data_path` to the HIS data share containing `RG011M1.DBF` and, when available, `PD001M1.DBF`.
    - Physician filters are entered on the queue page under 一診 and 二診. The fields are shared by every workstation connected to this server and save when focus leaves the field. Leave a field blank when that room has no session. Each non-empty `CCDOC` code can belong to only one room.
    - For an existing installation, `doctor_room_map` in `config.json` is used only to seed an empty room filter the first time the database starts. New installations can leave it empty and enter the codes on the page.
-   - Set `patient_name_field` to the patient-name field in `PD001M1.DBF`; leave it empty to show chart numbers until it is known.
+   - The current HIS schema uses `NUM` for the registration's patient number and in `PD001M1.DBF`, with `NAME` for the patient name. Set `patient_number_field` to the matching patient-number field in `PD001M1.DBF` and `patient_name_field` to the name field; leave the name field empty to show chart numbers instead.
    - Set `bind_host` and `port` for the clinic host. `0.0.0.0` makes the service reachable on its LAN interfaces; keep the host inside the clinic LAN.
    - Keep `sqlite_path` and `log_path` on an application-owned local drive, outside the HIS data directory.
 
@@ -42,7 +42,7 @@ Room views use `/?room=1` for 一診 and `/?room=2` for 二診; the default `/` 
 
 The completed list stays collapsed until opened. `診別未確認` is also collapsed by default and displays a record count in its heading. During testing, it remains visible even when the count is zero. Room queues support presence, overdue, and reorder controls; HIS handles patient calling.
 
-Browsers check for shared queue changes every second. A page reload waits while the session selector or a physician-code field is focused, and while a physician-code save is in progress. Changing a room filter saves that field when it loses focus; the latest saved value is shared across workstations. The server checks HIS data every 500 ms by default and runs a full recovery scan every 45 seconds.
+Browsers check for shared queue changes every second. A page reload waits while the session selector or a physician-code field is focused, and while a physician-code save is in progress. Expanded per-patient registration details remain expanded across reloads in the same browser tab. Changing a room filter saves that field when it loses focus; the latest saved value is shared across workstations. The server checks HIS data every 500 ms by default and runs a full recovery scan every 45 seconds.
 
 If the HIS share is briefly unavailable, the last saved queue remains visible with a sync warning while the server retries. New registrations receive a configurable 300-second NEW highlight. These actions only change the local SQLite queue state; they never write back to HIS files.
 

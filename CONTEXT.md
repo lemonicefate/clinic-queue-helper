@@ -10,6 +10,9 @@ A visit's clinic session category: `1` is 早診, `2` is 午診, and `3` is 晚�
 **醫師代碼 (`CCDOC`)**:
 The HIS value identifying the physician for an encounter; it is the sole source of 一診／二診 membership. Each room's filter is shared across workstations through the server's SQLite database and saves when its field loses focus.
 
+**病歷號碼**:
+The patient identifier carried by a registration. To resolve a patient's name, match the registration's `NUM` value to the corresponding identifier in the patient master record.
+
 **診間（一診／二診）**:
 One of the clinic's two consultation rooms; an encounter belongs to the room whose selected physician code matches its HIS `CCDOC` value. A blank selected code means there is no clinic session and no queue is created for that room. A code matching neither room remains visible in the read-only unmatched area.
 

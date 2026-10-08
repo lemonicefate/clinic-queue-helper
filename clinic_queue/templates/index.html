@@ -95,7 +95,7 @@
               {% endif %}
             </div>
           {% endif %}
-          <details>
+          <details class="registration-details">
             <summary>掛號資料</summary>
             <span class="secondary">醫師 {{ encounter.doctor_code }} · 掛號時間 {{ encounter.registration_time }}</span>
             <span class="secondary">TREAT {{ encounter.raw_his.get('TREAT', '').strip() }} · OVER {{ encounter.raw_his.get('OVER', '').strip() }}</span>
@@ -213,6 +213,55 @@
       let pendingRoomCodeSaves = 0;
       let pollInProgress = false;
       const clinicSessionPicker = document.querySelector("#clinic-session");
+      const registrationDetailsStorageKey = "clinicQueue.openRegistrationDetails.v1";
+
+      function loadOpenRegistrationDetails() {
+        try {
+          const savedKeys = JSON.parse(sessionStorage.getItem(registrationDetailsStorageKey) || "[]");
+          return new Set(Array.isArray(savedKeys) ? savedKeys.filter((key) => typeof key === "string") : []);
+        } catch (_) {
+          return new Set();
+        }
+      }
+
+      const openRegistrationDetailKeys = loadOpenRegistrationDetails();
+      const registrationDetails = Array.from(document.querySelectorAll(".registration-details"));
+
+      function encounterKeyForDetails(details) {
+        return details.closest("[data-encounter-key]")?.dataset.encounterKey;
+      }
+
+      function saveOpenRegistrationDetails() {
+        try {
+          sessionStorage.setItem(
+            registrationDetailsStorageKey,
+            JSON.stringify(Array.from(openRegistrationDetailKeys)),
+          );
+        } catch (_) {
+          // Page refresh still works if this browser does not allow session storage.
+        }
+      }
+
+      registrationDetails.forEach((details) => {
+        const encounterKey = encounterKeyForDetails(details);
+        if (!encounterKey) return;
+        details.addEventListener("toggle", () => {
+          if (details.open) openRegistrationDetailKeys.add(encounterKey);
+          else openRegistrationDetailKeys.delete(encounterKey);
+          saveOpenRegistrationDetails();
+        });
+        if (openRegistrationDetailKeys.has(encounterKey)) details.open = true;
+      });
+
+      window.addEventListener("pagehide", () => {
+        registrationDetails.forEach((details) => {
+          const encounterKey = encounterKeyForDetails(details);
+          if (!encounterKey) return;
+          if (details.open) openRegistrationDetailKeys.add(encounterKey);
+          else openRegistrationDetailKeys.delete(encounterKey);
+        });
+        saveOpenRegistrationDetails();
+      });
 
       function maybeApplyPendingRefresh() {
         if (!pendingRefresh || pendingRoomCodeSaves > 0) return;
