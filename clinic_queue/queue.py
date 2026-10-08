@@ -578,9 +578,10 @@ class QueueStore:
             row["room_id"] is None
             or row["time_kind"] is None
             or row["presence_status"] != PresenceState.PRESENT.value
+            or row["queue_status"] != "WAITING"
         ):
             raise QueueError(
-                "Only present encounters matched to a room with a known clinic session can be reordered."
+                "Only waiting encounters matched to a room with a known clinic session can be reordered."
             )
         return QueueScope(int(row["room_id"]), ClinicSession(int(row["time_kind"])))
 
@@ -678,7 +679,7 @@ class QueueStore:
             """
             SELECT encounter_key FROM encounter_state
             WHERE room_id = ? AND time_kind = ? AND presence_status = 'PRESENT'
-              AND queue_status NOT IN ('COMPLETED', 'INVALIDATED')
+              AND queue_status = 'WAITING'
             ORDER BY queue_position, created_at, encounter_key
             """,
             (scope.room_id, int(scope.time_kind)),
@@ -738,9 +739,35 @@ class QueueStore:
         return self._row_to_dict(updated)
 
     def reorder(self, encounter_key: str, position: int) -> dict[str, Any]:
-        """Move an encounter to a one-based room position (drag/drop target)."""
+        """Move an encounter to an exact one-based final position in its queue."""
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            return self._reorder_in_transaction(connection, encounter_key, position, self._now())
+
+    def reorder_relative(
+        self,
+        encounter_key: str,
+        target_encounter_key: str,
+        insert_after: bool,
+    ) -> dict[str, Any]:
+        """Place a waiting encounter before or after another in its room/session queue."""
+        if type(insert_after) is not bool:
+            raise QueueError("insert_after must be true or false.")
+        if encounter_key == target_encounter_key:
+            raise QueueError("An encounter cannot be reordered relative to itself.")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            source = self._require_active_row(connection, encounter_key)
+            scope = self._require_reorder_scope(source)
+            target = self._require_active_row(connection, target_encounter_key)
+            target_scope = self._require_reorder_scope(target)
+            if target_scope != scope:
+                raise QueueError("Encounters can only be reordered within the same room and clinic session.")
+            keys = self._ordered_room_keys(connection, scope)
+            if encounter_key not in keys or target_encounter_key not in keys:
+                raise QueueError("Only waiting encounters can be reordered.")
+            keys.remove(encounter_key)
+            position = keys.index(target_encounter_key) + 1 + int(insert_after)
             return self._reorder_in_transaction(connection, encounter_key, position, self._now())
 
     def _move(self, encounter_key: str, delta: int) -> dict[str, Any]:
