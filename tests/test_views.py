@@ -16,6 +16,14 @@ def make_ready_app(tmp_path):
             snapshot("r1", "DOC1", patient_no="100001", queue_number="15"),
             snapshot("r2", "DOC2", patient_no="100002", queue_number="15"),
             snapshot("away", "DOC1", presence=PresenceState.AWAY, patient_no="100003"),
+            snapshot(
+                "preregistered",
+                "DOC1",
+                presence=PresenceState.AWAY,
+                state=HISState.PREREGISTERED,
+                patient_no="100007",
+                queue_number="20",
+            ),
             snapshot("unknown", "DOCX", patient_no="100004", queue_number="17"),
             snapshot(
                 "completed",
@@ -35,7 +43,6 @@ def make_ready_app(tmp_path):
         config.doctor_room_map,
     )
     app.state.queue_store.set_overdue("r1", True)
-    app.state.queue_store.set_current("r2")
     return app
 
 
@@ -60,6 +67,8 @@ def test_both_room_view_has_room_columns_and_collapsed_completed_section(tmp_pat
     assert '<details class="completed-section" open' not in response.text
     assert 'data-room-column="1"' in response.text
     assert 'data-room-column="2"' in response.text
+    assert 'data-room-id="1" data-time-kind="1"' in response.text
+    assert 'data-room-id="2" data-time-kind="1"' in response.text
     assert "已完成 (2)" in response.text
     assert "#18 Name 100005" in response.text
     assert "window.setInterval" in response.text
@@ -82,18 +91,20 @@ def test_single_room_views_filter_columns_and_keep_queue_controls(tmp_path):
     assert 'aria-label="Room 1"' in room_one.text
     assert 'aria-label="Room 2"' not in room_one.text
     assert 'data-action="up"' in room_one.text
-    assert 'data-next-room="1"' in room_one.text
+    assert "下一位" not in room_one.text
     assert "Unassigned" in room_one.text
     assert "指派 Room 1" in room_one.text
     assert "#18 Name 100005" in room_one.text
     assert "#19 Name 100006" not in room_one.text
     assert "過號" in room_one.text
     assert "暫未到診" in room_one.text
-    assert "看診中" in room_two.text
+    assert "未報到" in room_one.text
+    assert "看診中" not in room_two.text
+    assert "已叫號" not in room_two.text
     assert room_two.status_code == 200
     assert 'aria-label="Room 2"' in room_two.text
     assert 'aria-label="Room 1"' not in room_two.text
-    assert 'data-next-room="2"' in room_two.text
+    assert "下一位" not in room_two.text
     assert "#19 Name 100006" in room_two.text
     assert "#18 Name 100005" not in room_two.text
 
@@ -119,14 +130,18 @@ def test_independent_browser_clients_observe_the_same_authoritative_queue(tmp_pa
     assert updated.status_code == 200
     assert observed.status_code == 200
     away_entries = observed.json()["rooms"]["1"]["away"]
-    assert {entry["encounter_key"] for entry in away_entries} == {"r1", "away"}
+    assert {entry["encounter_key"] for entry in away_entries} == {
+        "r1",
+        "away",
+        "preregistered",
+    }
     assert observed.json()["his_stale"] is True
 
 
 def test_sqlite_api_failure_returns_actionable_local_storage_message(tmp_path, monkeypatch):
     app = make_ready_app(tmp_path)
 
-    def fail_get_board():
+    def fail_get_board(time_kind=None):
         raise sqlite3.OperationalError("disk I/O error")
 
     monkeypatch.setattr(app.state.queue_store, "get_board", fail_get_board)
@@ -141,3 +156,110 @@ def test_sqlite_api_failure_returns_actionable_local_storage_message(tmp_path, m
     assert response.status_code == 503
     assert "Local queue database unavailable" in response.json()["detail"]
     assert "app.log" in response.json()["detail"]
+
+
+def test_browser_session_filters_every_list_and_keeps_unknown_sessions_separate(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1, "DOC2": 2})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("morning-room", "DOC1", patient_no="100101", time_kind="1"),
+            snapshot("noon-room", "DOC1", patient_no="100102", time_kind="2"),
+            snapshot("evening-room", "DOC2", patient_no="100103", time_kind="3"),
+            snapshot("morning-away", "DOC1", presence=PresenceState.AWAY, patient_no="100104", time_kind="1"),
+            snapshot("noon-away", "DOC1", presence=PresenceState.AWAY, patient_no="100105", time_kind="2"),
+            snapshot("evening-away", "DOC2", presence=PresenceState.AWAY, patient_no="100113", time_kind="3"),
+            snapshot("morning-unassigned", "DOCX", patient_no="100106", time_kind="1"),
+            snapshot("noon-unassigned", "DOCX", patient_no="100107", time_kind="2"),
+            snapshot("evening-unassigned", "DOCX", patient_no="100114", time_kind="3"),
+            snapshot("morning-completed", "DOC1", patient_no="100108", state=HISState.COMPLETED, time_kind="1"),
+            snapshot("noon-completed", "DOC1", patient_no="100109", state=HISState.COMPLETED, time_kind="2"),
+            snapshot("evening-completed", "DOC2", patient_no="100115", state=HISState.COMPLETED, time_kind="3"),
+            snapshot("unknown-room", "DOC1", patient_no="100110", time_kind="9"),
+            snapshot("unknown-unassigned", "DOCX", patient_no="100111", time_kind=None),
+            snapshot("unknown-completed", "DOC1", patient_no="100112", state=HISState.COMPLETED, time_kind="0"),
+        ],
+        config.doctor_room_map,
+    )
+
+    async def inspect_browsers():
+        transport = httpx.ASGITransport(app=app)
+        async with (
+            httpx.AsyncClient(transport=transport, base_url="http://clinic") as morning_browser,
+            httpx.AsyncClient(transport=transport, base_url="http://clinic") as noon_browser,
+            httpx.AsyncClient(transport=transport, base_url="http://clinic") as evening_browser,
+        ):
+            morning_page = await morning_browser.get("/?room=1")
+            morning_api = await morning_browser.get("/api/queue")
+            noon_browser.cookies.set("clinic_session", "2")
+            noon_page = await noon_browser.get("/?room=1")
+            noon_api = await noon_browser.get("/api/queue")
+            evening_browser.cookies.set("clinic_session", "3")
+            evening_page = await evening_browser.get("/?room=2")
+            evening_api = await evening_browser.get("/api/queue")
+            morning_refresh = await morning_browser.get("/api/queue")
+            return (
+                morning_page,
+                morning_api,
+                noon_page,
+                noon_api,
+                evening_page,
+                evening_api,
+                morning_refresh,
+            )
+
+    (
+        morning_page,
+        morning_response,
+        noon_page,
+        noon_response,
+        evening_page,
+        evening_response,
+        morning_refresh,
+    ) = asyncio.run(inspect_browsers())
+
+    assert morning_page.status_code == noon_page.status_code == 200
+    assert '<option value="1" selected>早診</option>' in morning_page.text
+    assert '<option value="2" selected>午診</option>' in noon_page.text
+    assert '<option value="3" selected>晚診</option>' in evening_page.text
+    assert "100101" in morning_page.text
+    assert "100102" not in morning_page.text
+    assert "100102" in noon_page.text
+    assert "100101" not in noon_page.text
+    assert "100103" in evening_page.text
+    assert "100101" not in evening_page.text
+    assert "診別未確認" in morning_page.text
+    assert 'aria-label="Room 2"' not in morning_page.text
+
+    morning = morning_response.json()
+    noon = noon_response.json()
+    assert morning_response.status_code == noon_response.status_code == 200
+    assert evening_response.status_code == 200
+    assert morning["selected_time_kind"] == 1
+    assert noon["selected_time_kind"] == 2
+    evening = evening_response.json()
+    assert evening["selected_time_kind"] == 3
+    assert [entry["encounter_key"] for entry in evening["rooms"]["2"]["waiting"]] == [
+        "evening-room",
+    ]
+    assert [entry["encounter_key"] for entry in evening["rooms"]["2"]["away"]] == [
+        "evening-away",
+    ]
+    assert [entry["encounter_key"] for entry in evening["unassigned"]] == [
+        "evening-unassigned",
+    ]
+    assert [entry["encounter_key"] for entry in evening["completed"]] == [
+        "evening-completed",
+    ]
+    assert [entry["encounter_key"] for entry in morning["rooms"]["1"]["waiting"]] == ["morning-room"]
+    assert [entry["encounter_key"] for entry in morning["rooms"]["1"]["away"]] == ["morning-away"]
+    assert [entry["encounter_key"] for entry in morning["unassigned"]] == ["morning-unassigned"]
+    assert [entry["encounter_key"] for entry in morning["completed"]] == ["morning-completed"]
+    assert [entry["encounter_key"] for entry in noon["rooms"]["1"]["waiting"]] == ["noon-room"]
+    assert [entry["encounter_key"] for entry in noon["rooms"]["1"]["away"]] == ["noon-away"]
+    assert [entry["encounter_key"] for entry in noon["unassigned"]] == ["noon-unassigned"]
+    assert [entry["encounter_key"] for entry in noon["completed"]] == ["noon-completed"]
+    assert [entry["encounter_key"] for entry in morning["unconfirmed"]["rooms"]["1"]["waiting"]] == ["unknown-room"]
+    assert [entry["encounter_key"] for entry in morning["unconfirmed"]["unassigned"]] == ["unknown-unassigned"]
+    assert [entry["encounter_key"] for entry in morning["unconfirmed"]["completed"]] == ["unknown-completed"]
+    assert morning_refresh.json()["selected_time_kind"] == 1

@@ -15,11 +15,15 @@ from pydantic import BaseModel
 from .config import AppConfig
 from .polling import HISPoller
 from .queue import QueueError, QueueStore
-from .state import PresenceState
+from .state import PresenceState, normalize_time_kind
 
 
 _TEMPLATE_DIR = Path(__file__).with_name("templates")
 logger = logging.getLogger("clinic_queue.app")
+
+
+def _selected_time_kind(request: Request) -> int:
+    return normalize_time_kind(request.cookies.get("clinic_session")) or 1
 
 
 class RoomAssignment(BaseModel):
@@ -36,10 +40,6 @@ class QueueAction(BaseModel):
 class QueueReorder(BaseModel):
     encounter_key: str
     position: int
-
-
-class NextPatient(BaseModel):
-    room_id: int
 
 
 def create_app(config: AppConfig) -> FastAPI:
@@ -84,10 +84,16 @@ def create_app(config: AppConfig) -> FastAPI:
     async def home(request: Request) -> HTMLResponse:
         room_param = request.query_params.get("room")
         selected_room = int(room_param) if room_param in ("1", "2") else None
-        board = store.get_board()
+        selected_time_kind = _selected_time_kind(request)
+        board = store.get_board(selected_time_kind)
         completed_encounters = [
             encounter
             for encounter in board["completed"]
+            if selected_room is None or encounter["room_id"] in (None, selected_room)
+        ]
+        unconfirmed_completed_encounters = [
+            encounter
+            for encounter in board["unconfirmed"]["completed"]
             if selected_room is None or encounter["room_id"] in (None, selected_room)
         ]
         return templates.TemplateResponse(
@@ -99,7 +105,9 @@ def create_app(config: AppConfig) -> FastAPI:
                 "his_stale": poller.his_stale,
                 "selected_rooms": [selected_room] if selected_room is not None else [1, 2],
                 "selected_room": selected_room,
+                "selected_time_kind": selected_time_kind,
                 "completed_encounters": completed_encounters,
+                "unconfirmed_completed_encounters": unconfirmed_completed_encounters,
                 "browser_refresh_ms": config.browser_refresh_ms,
                 "storage_error": poller.storage_error,
                 "queue_state": {
@@ -111,9 +119,9 @@ def create_app(config: AppConfig) -> FastAPI:
         )
 
     @application.get("/api/queue")
-    async def get_queue() -> dict:
+    async def get_queue(request: Request) -> dict:
         return {
-            **store.get_board(),
+            **store.get_board(_selected_time_kind(request)),
             "his_stale": poller.his_stale,
             "storage_error": poller.storage_error,
         }
@@ -130,7 +138,7 @@ def create_app(config: AppConfig) -> FastAPI:
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     @application.post("/api/action")
-    async def queue_action(action: QueueAction) -> dict:
+    async def queue_action(action: QueueAction, request: Request) -> dict:
         store = application.state.queue_store
         try:
             if action.action == "present":
@@ -145,31 +153,18 @@ def create_app(config: AppConfig) -> FastAPI:
                 store.move_up(action.encounter_key)
             elif action.action == "down":
                 store.move_down(action.encounter_key)
-            elif action.action == "call":
-                store.call(action.encounter_key)
-            elif action.action == "current":
-                store.set_current(action.encounter_key)
             else:
                 raise QueueError(f"Unknown queue action: {action.action}")
-            return store.get_board()
+            return store.get_board(_selected_time_kind(request))
         except QueueError as exc:
             status_code = 404 if "not found" in str(exc).lower() else 400
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     @application.post("/api/reorder")
-    async def reorder_queue(reorder: QueueReorder) -> dict:
+    async def reorder_queue(reorder: QueueReorder, request: Request) -> dict:
         try:
             application.state.queue_store.reorder(reorder.encounter_key, reorder.position)
-            return application.state.queue_store.get_board()
-        except QueueError as exc:
-            status_code = 404 if "not found" in str(exc).lower() else 400
-            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-
-    @application.post("/api/next")
-    async def next_patient(next_request: NextPatient) -> dict:
-        try:
-            application.state.queue_store.next_patient(next_request.room_id)
-            return application.state.queue_store.get_board()
+            return application.state.queue_store.get_board(_selected_time_kind(request))
         except QueueError as exc:
             status_code = 404 if "not found" in str(exc).lower() else 400
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc

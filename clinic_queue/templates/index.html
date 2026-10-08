@@ -14,7 +14,7 @@
       .sync[role="alert"] { background: #fff0d5; color: #704900; }
       .columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
       .columns.single-room { grid-template-columns: minmax(0, 1fr); max-width: 800px; }
-      .room, .unassigned { background: white; border: 1px solid #d8e3eb; border-radius: .75rem; padding: 1rem; box-shadow: 0 2px 8px #1830440b; }
+      .room, .unassigned, .unconfirmed { background: white; border: 1px solid #d8e3eb; border-radius: .75rem; padding: 1rem; box-shadow: 0 2px 8px #1830440b; }
       .room h2, .unassigned h2 { margin: 0 0 .85rem; }
       h3 { margin: 1rem 0 .5rem; font-size: 1rem; color: #536b7c; }
       .patient { padding: .75rem; margin: .5rem 0; border: 1px solid #e1e9ef; border-radius: .5rem; }
@@ -25,6 +25,7 @@
       .secondary { display: block; margin-top: .3rem; color: #536b7c; font-size: .9rem; }
       .badge { display: inline-block; margin-left: .35rem; padding: .1rem .45rem; border-radius: 1rem; background: #e8f0f6; font-size: .8rem; }
       .badge.away { background: #fff0d5; }
+      .session-picker { margin: 1rem 0; }
       .assign-actions { display: flex; gap: .5rem; margin-top: .7rem; }
       .queue-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .7rem; }
       button { min-height: 2.5rem; padding: .4rem .75rem; border: 1px solid #87a9be; border-radius: .4rem; color: #183044; background: #f7fbfd; cursor: pointer; }
@@ -48,18 +49,27 @@
       <nav aria-label="診間檢視">
         <a href="/">兩間診間</a> · <a href="/?room=1">Room 1</a> · <a href="/?room=2">Room 2</a>
       </nav>
+      <div class="session-picker">
+        <label for="clinic-session">門診時段</label>
+        <select id="clinic-session" aria-label="門診時段">
+          <option value="1"{% if selected_time_kind == 1 %} selected{% endif %}>早診</option>
+          <option value="2"{% if selected_time_kind == 2 %} selected{% endif %}>午診</option>
+          <option value="3"{% if selected_time_kind == 3 %} selected{% endif %}>晚診</option>
+        </select>
+      </div>
 
       {% macro patient_card(encounter, order=none, can_assign=false) %}
         <article class="patient{% if encounter.is_new %} new-patient{% endif %}{% if order is not none %} waiting-patient{% endif %}"
                  data-encounter-key="{{ encounter.encounter_key }}"
-                 {% if order is not none %}draggable="true" data-room-id="{{ encounter.room_id }}" data-position="{{ order }}"{% endif %}>
+                 {% if order is not none %}draggable="true" data-room-id="{{ encounter.room_id }}" data-time-kind="{{ encounter.time_kind }}" data-position="{{ order }}"{% endif %}>
           <strong>{% if order is not none %}{{ order }}. {% endif %}#{{ encounter.queue_number }} {{ encounter.patient_name }}</strong>
           {% if encounter.is_new %}<span class="badge">NEW</span>{% endif %}
           {% if encounter.overdue %}<span class="badge">過號</span>{% endif %}
           {% if encounter.presence_status == 'AWAY' %}<span class="badge away">暫未到診</span>{% endif %}
-          {% if encounter.queue_status == 'IN_CONSULTATION' %}<span class="badge">看診中</span>{% endif %}
-          {% if encounter.queue_status == 'CALLED' %}<span class="badge">已叫號</span>{% endif %}
-          {% if encounter.queue_status == 'COMPLETED' %}<span class="badge">已完成</span>{% endif %}
+          {% if encounter.time_kind is none %}<span class="badge">診別未確認</span>{% endif %}
+          {% if encounter.queue_status == 'WAITING' %}<span class="badge">候診</span>{% endif %}
+          {% if encounter.queue_status == 'PREREGISTERED' %}<span class="badge">未報到</span>{% endif %}
+          {% if encounter.queue_status == 'COMPLETED' %}<span class="badge">完成</span>{% endif %}
           <span class="secondary">病歷號 {{ encounter.patient_no }}</span>
           {% if can_assign %}
             <div class="assign-actions" aria-label="指派診間">
@@ -74,10 +84,10 @@
                 <button type="button" data-action="away" data-encounter-key="{{ encounter.encounter_key }}">暫未到診</button>
               {% endif %}
               {% if encounter.room_id and encounter.presence_status == 'PRESENT' %}
-                <button type="button" data-action="up" data-encounter-key="{{ encounter.encounter_key }}">上移</button>
-                <button type="button" data-action="down" data-encounter-key="{{ encounter.encounter_key }}">下移</button>
-                <button type="button" data-action="call" data-encounter-key="{{ encounter.encounter_key }}">叫號</button>
-                <button type="button" data-action="current" data-encounter-key="{{ encounter.encounter_key }}">設為目前看診</button>
+                {% if encounter.time_kind is not none %}
+                  <button type="button" data-action="up" data-encounter-key="{{ encounter.encounter_key }}">上移</button>
+                  <button type="button" data-action="down" data-encounter-key="{{ encounter.encounter_key }}">下移</button>
+                {% endif %}
                 <button type="button" data-action="overdue" data-value="{{ 'false' if encounter.overdue else 'true' }}" data-encounter-key="{{ encounter.encounter_key }}">
                   {% if encounter.overdue %}取消過號{% else %}標記過號{% endif %}
                 </button>
@@ -95,7 +105,7 @@
       <div class="columns{% if selected_room %} single-room{% endif %}">
         {% for room_id in selected_rooms %}
           <section class="room" aria-label="Room {{ room_id }}" data-room-column="{{ room_id }}">
-            <h2>Room {{ room_id }} <button type="button" data-next-room="{{ room_id }}">下一位</button></h2>
+            <h2>Room {{ room_id }}</h2>
             <h3>候診中</h3>
             {% for encounter in board.rooms[room_id].waiting %}
               {{ patient_card(encounter, encounter.queue_position) }}
@@ -108,10 +118,6 @@
             {% else %}
               <p class="empty">目前沒有暫未到診病人</p>
             {% endfor %}
-            {% if board.rooms[room_id].other %}<h3>叫號 / 看診中</h3>{% endif %}
-            {% for encounter in board.rooms[room_id].other %}
-              {{ patient_card(encounter) }}
-            {% endfor %}
           </section>
         {% endfor %}
       </div>
@@ -122,6 +128,36 @@
           {{ patient_card(encounter, can_assign=true) }}
         {% else %}
           <p class="empty">沒有未指派病人</p>
+        {% endfor %}
+      </section>
+
+      <section class="unconfirmed" aria-label="診別未確認">
+        <h2>診別未確認</h2>
+        {% for room_id in selected_rooms %}
+          <h3>Room {{ room_id }} · 候診</h3>
+          {% for encounter in board.unconfirmed.rooms[room_id].waiting %}
+            {{ patient_card(encounter) }}
+          {% else %}
+            <p class="empty">目前沒有診別未確認的候診病人</p>
+          {% endfor %}
+          <h3>Room {{ room_id }} · 暫未到診</h3>
+          {% for encounter in board.unconfirmed.rooms[room_id].away %}
+            {{ patient_card(encounter) }}
+          {% else %}
+            <p class="empty">目前沒有診別未確認的暫未到診病人</p>
+          {% endfor %}
+        {% endfor %}
+        <h3>未指派</h3>
+        {% for encounter in board.unconfirmed.unassigned %}
+          {{ patient_card(encounter, can_assign=true) }}
+        {% else %}
+          <p class="empty">沒有診別未確認的未指派病人</p>
+        {% endfor %}
+        <h3>已完成</h3>
+        {% for encounter in unconfirmed_completed_encounters %}
+          {{ patient_card(encounter) }}
+        {% else %}
+          <p class="empty">沒有診別未確認的已完成掛號</p>
         {% endfor %}
       </section>
 
@@ -197,29 +233,31 @@
         button.addEventListener("click", () => runAction(button, button.dataset.action));
       });
 
-      document.querySelectorAll("[data-next-room]").forEach((button) => {
-        button.addEventListener("click", async () => {
-          button.disabled = true;
-          try {
-            await postJson("/api/next", { room_id: Number(button.dataset.nextRoom) });
-            window.location.reload();
-          } catch (error) {
-            window.alert(error.message);
-            button.disabled = false;
-          }
-        });
+      document.querySelector("#clinic-session").addEventListener("change", (event) => {
+        document.cookie = `clinic_session=${event.target.value}; Max-Age=31536000; Path=/; SameSite=Lax`;
+        window.location.reload();
       });
 
-      let draggedKey = null;
+      let draggedPatient = null;
       document.querySelectorAll(".waiting-patient").forEach((card) => {
-        card.addEventListener("dragstart", () => { draggedKey = card.dataset.encounterKey; });
-        card.addEventListener("dragover", (event) => event.preventDefault());
+        card.addEventListener("dragstart", () => { draggedPatient = card; });
+        card.addEventListener("dragend", () => { draggedPatient = null; });
+        card.addEventListener("dragover", (event) => {
+          if (!draggedPatient) return;
+          if (draggedPatient.dataset.roomId !== card.dataset.roomId) return;
+          if (draggedPatient.dataset.timeKind !== card.dataset.timeKind) return;
+          event.preventDefault();
+        });
         card.addEventListener("drop", async (event) => {
           event.preventDefault();
-          if (!draggedKey || draggedKey === card.dataset.encounterKey) return;
+          const source = draggedPatient;
+          if (!source || source === card) return;
+          if (source.dataset.roomId !== card.dataset.roomId) return;
+          if (source.dataset.timeKind !== card.dataset.timeKind) return;
+          draggedPatient = null;
           try {
             await postJson("/api/reorder", {
-              encounter_key: draggedKey,
+              encounter_key: source.dataset.encounterKey,
               position: Number(card.dataset.position),
             });
             window.location.reload();

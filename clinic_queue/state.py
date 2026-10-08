@@ -14,7 +14,6 @@ logger = logging.getLogger("clinic_queue.state")
 class HISState(str, Enum):
     INVALID = "INVALID"
     COMPLETED = "COMPLETED"
-    IN_PROGRESS = "IN_PROGRESS"
     PREREGISTERED = "PREREGISTERED"
     WAITING = "WAITING"
 
@@ -22,6 +21,19 @@ class HISState(str, Enum):
 class PresenceState(str, Enum):
     PRESENT = "PRESENT"
     AWAY = "AWAY"
+
+
+TIME_KIND_LABELS = {1: "早診", 2: "午診", 3: "晚診"}
+
+
+def normalize_time_kind(value: Any) -> int | None:
+    """Return a supported clinic-session identity, leaving uncertain values unknown."""
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        value = value.decode("ascii", errors="replace")
+    normalized = str(value).strip()
+    return int(normalized) if normalized in {"1", "2", "3"} else None
 
 
 @dataclass(frozen=True)
@@ -63,11 +75,9 @@ def resolve_his_state(fields: Mapping[str, Any]) -> ResolvedHISState:
         return ResolvedHISState(HISState.INVALID, None, False)
     if over == "T" or treat == "Y":
         return ResolvedHISState(HISState.COMPLETED, None, False)
-    if over == "F" or treat == "B":
-        return ResolvedHISState(HISState.IN_PROGRESS, PresenceState.PRESENT, True)
     if treat == "C":
         return ResolvedHISState(HISState.PREREGISTERED, PresenceState.AWAY, True)
-    if treat == "N":
+    if over == "F" or treat in {"B", "N"}:
         return ResolvedHISState(HISState.WAITING, PresenceState.PRESENT, True)
 
     logger.warning("Unknown HIS state combination: OVER=%r, TREAT=%r", over, treat)

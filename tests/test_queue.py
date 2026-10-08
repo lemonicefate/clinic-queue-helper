@@ -20,7 +20,11 @@ def snapshot(
     state: HISState = HISState.WAITING,
     patient_no: str = "100001",
     queue_number: str = "53",
+    time_kind: str | None = "1",
 ) -> EncounterSnapshot:
+    raw_his = {"TREAT": "N", "OVER": ""}
+    if time_kind is not None:
+        raw_his["TIME_KIND"] = time_kind
     return EncounterSnapshot(
         encounter_key=key,
         recno=sum((index + 1) * ord(character) for index, character in enumerate(key)),
@@ -34,7 +38,7 @@ def snapshot(
         his_state=state,
         initial_presence=presence,
         active=True,
-        raw_his={"TREAT": "N", "OVER": ""},
+        raw_his=raw_his,
     )
 
 

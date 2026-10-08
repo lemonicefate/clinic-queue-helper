@@ -17,12 +17,22 @@ FIELDS = [
     ("CCDOC", "C", 6),
     ("OVER", "C", 1),
     ("TREAT", "C", 1),
+    ("TIME_KIND", "C", 1),
     ("GINO1", "C", 10),
     ("RELKEY", "C", 12),
 ]
 
 
-def rg_row(number, *, doctor="DOC1", treat="N", over="", deleted=False, visit_day=None):
+def rg_row(
+    number,
+    *,
+    doctor="DOC1",
+    treat="N",
+    over="",
+    time_kind="1",
+    deleted=False,
+    visit_day=None,
+):
     return {
         "_DELETED": deleted,
         "NUM": number,
@@ -32,6 +42,7 @@ def rg_row(number, *, doctor="DOC1", treat="N", over="", deleted=False, visit_da
         "CCDOC": doctor,
         "OVER": over,
         "TREAT": treat,
+        "TIME_KIND": time_kind,
         "GINO1": f"151007{int(number[-4:]):04d}",
         "RELKEY": f"REL-{number}",
     }
@@ -74,7 +85,7 @@ def test_tracked_record_changes_reconcile_completion_and_deletion(tmp_path):
 
     make_source(config, [rg_row("100001", over="F")])
     poller.poll_once()
-    assert store.get_board()["rooms"][1]["other"][0]["queue_status"] == "IN_CONSULTATION"
+    assert store.get_board(1)["rooms"][1]["waiting"][0]["queue_status"] == "WAITING"
 
     make_source(config, [rg_row("100001", treat="Y")])
     poller.poll_once()
@@ -136,7 +147,6 @@ def test_restart_reconciliation_preserves_staff_state_and_prunes_other_days(tmp_
     store.assign_room("relkey:REL-100002", 2)
     store.assign_room("relkey:REL-100003", 2)
     store.reorder("relkey:REL-100003", 1)
-    store.set_current("relkey:REL-100002")
     stale = replace(
         poller.tracked_by_recno[1],
         encounter_key="relkey:OLD-DAY",
@@ -144,24 +154,61 @@ def test_restart_reconciliation_preserves_staff_state_and_prunes_other_days(tmp_
         visit_date=date.today() - timedelta(days=1),
     )
     store.reconcile([stale], config.doctor_room_map)
+    with sqlite3.connect(config.sqlite_path) as connection:
+        connection.execute(
+            "UPDATE encounter_state SET queue_status = 'IN_CONSULTATION', current_flag = 1 "
+            "WHERE encounter_key = ?",
+            ("relkey:REL-100002",),
+        )
 
     restarted, restarted_store = make_poller(config)
     restarted.initialize()
 
     board = restarted_store.get_board()
     away = board["rooms"][1]["away"][0]
-    room_two = board["rooms"][2]["other"][0]
+    room_two_entries = board["rooms"][2]["waiting"]
+    room_two = next(entry for entry in room_two_entries if entry["encounter_key"] == "relkey:REL-100002")
     assert away["encounter_key"] == "relkey:REL-100001"
     assert away["presence_override"] is True
     assert room_two["encounter_key"] == "relkey:REL-100002"
     assert room_two["room_override"] is True
     assert room_two["overdue"] is True
-    assert room_two["current_flag"] is True
-    assert room_two["queue_status"] == "IN_CONSULTATION"
-    assert board["rooms"][2]["waiting"][0]["encounter_key"] == "relkey:REL-100003"
+    assert "current_flag" not in room_two
+    assert room_two["queue_status"] == "WAITING"
+    assert [entry["encounter_key"] for entry in room_two_entries] == [
+        "relkey:REL-100003",
+        "relkey:REL-100002",
+    ]
     with sqlite3.connect(config.sqlite_path) as connection:
         visit_dates = [row[0] for row in connection.execute("SELECT visit_date FROM encounter_state")]
     assert set(visit_dates) == {date.today().isoformat()}
+
+
+def test_new_his_encounter_appends_to_its_room_and_session_order(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    make_source(
+        config,
+        [rg_row("100001", time_kind="1"), rg_row("100002", time_kind="2")],
+    )
+    poller, store = make_poller(config)
+    poller.initialize()
+
+    make_source(
+        config,
+        [
+            rg_row("100001", time_kind="1"),
+            rg_row("100002", time_kind="2"),
+            rg_row("100003", time_kind="1"),
+        ],
+    )
+    poller.poll_once()
+
+    morning = store.get_board(1)["rooms"][1]["waiting"]
+    noon = store.get_board(2)["rooms"][1]["waiting"]
+    assert [entry["patient_no"] for entry in morning] == ["100001", "100003"]
+    assert [entry["queue_position"] for entry in morning] == [1, 2]
+    assert [entry["patient_no"] for entry in noon] == ["100002"]
+    assert [entry["queue_position"] for entry in noon] == [1]
 
 
 def test_doctor_change_invalidates_old_row_and_highlights_new_room_tail(tmp_path):

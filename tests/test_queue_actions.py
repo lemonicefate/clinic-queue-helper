@@ -1,11 +1,13 @@
 import asyncio
+import json
 import sqlite3
+from datetime import date
 
 import httpx
 
 from clinic_queue.app import create_app
 from clinic_queue.queue import QueueStore
-from clinic_queue.state import PresenceState
+from clinic_queue.state import HISState, PresenceState
 from tests.test_queue import create_config, snapshot
 
 
@@ -81,23 +83,26 @@ def test_reorder_and_up_down_actions_preserve_explicit_room_order(tmp_path):
     assert reordered["three"] is not None
 
 
-def test_call_current_and_next_patient_actions_are_room_scoped(tmp_path):
+def test_queue_exposes_only_his_supported_visit_categories(tmp_path):
     _, store = ready_store(tmp_path)
+    store.reconcile(
+        [
+            snapshot("waiting", "DOC1", patient_no="100001"),
+            snapshot("preregistered", "DOC1", patient_no="100002", state=HISState.PREREGISTERED),
+            snapshot("completed", "DOC1", patient_no="100003", state=HISState.COMPLETED),
+        ],
+        {"DOC1": 1},
+    )
 
-    first = store.next_patient(1)
-    assert first["encounter_key"] == "one"
-    assert first["queue_status"] == "CALLED"
-    assert first["current_flag"] is True
-
-    store.set_current("one")
-    second = store.next_patient(1)
-    assert second["encounter_key"] == "two"
     board = store.get_board()
-    room_entries = board["rooms"][1]["other"]
-    assert [(entry["encounter_key"], entry["current_flag"]) for entry in room_entries] == [
-        ("one", False),
-        ("two", True),
-    ]
+    entries = board["rooms"][1]["waiting"] + board["rooms"][1]["away"] + board["completed"]
+
+    assert {entry["queue_status"] for entry in entries} == {
+        "WAITING",
+        "PREREGISTERED",
+        "COMPLETED",
+    }
+    assert all("current_flag" not in entry for entry in entries)
 
 
 def test_server_operation_order_is_last_write_wins_and_survives_restart(tmp_path):
@@ -152,7 +157,7 @@ def test_drag_drop_reorder_api_accepts_target_position(tmp_path):
     ]
 
 
-def test_browser_action_api_changes_presence_and_renders_queue_controls(tmp_path):
+def test_browser_action_api_keeps_local_controls_without_calling_actions(tmp_path):
     config, _ = ready_store(tmp_path)
     app = create_app(config)
     app.state.queue_store.reconcile(
@@ -176,15 +181,23 @@ def test_browser_action_api_changes_presence_and_renders_queue_controls(tmp_path
                 "/api/action",
                 json={"encounter_key": "one", "action": "overdue", "value": True},
             )
-            next_response = await client.post("/api/next", json={"room_id": 1})
-            return page, away, present, overdue, next_response
+            removed_action = await client.post(
+                "/api/action",
+                json={"encounter_key": "one", "action": "call"},
+            )
+            removed_endpoint = await client.post("/api/next", json={"room_id": 1})
+            return page, away, present, overdue, removed_action, removed_endpoint
 
-    page, away, present, overdue, next_response = asyncio.run(use_browser_actions())
+    page, away, present, overdue, removed_action, removed_endpoint = asyncio.run(use_browser_actions())
 
     assert page.status_code == 200
     assert 'data-action="away"' in page.text
     assert 'data-action="up"' in page.text
-    assert 'data-next-room="1"' in page.text
+    assert "下一位" not in page.text
+    assert "叫號" not in page.text
+    assert "設為目前看診" not in page.text
+    assert "看診中" not in page.text
+    assert "已叫號" not in page.text
     assert 'draggable="true"' in page.text
     assert away.status_code == 200
     assert away.json()["rooms"]["1"]["away"][0]["presence_status"] == "AWAY"
@@ -202,5 +215,190 @@ def test_browser_action_api_changes_presence_and_renders_queue_controls(tmp_path
         if entry["encounter_key"] == "one"
     )
     assert marked["overdue"] is True
-    assert next_response.status_code == 200
-    assert any(entry["current_flag"] for entry in next_response.json()["rooms"]["1"]["other"])
+    assert removed_action.status_code == 400
+    assert removed_endpoint.status_code == 404
+
+
+def test_room_session_order_actions_do_not_change_other_groups(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1, "DOC2": 2})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("morning-one", "DOC1", patient_no="100001", time_kind="1"),
+            snapshot("morning-two", "DOC1", patient_no="100002", time_kind="1"),
+            snapshot("morning-extra", "DOCX", patient_no="100003", time_kind="1"),
+            snapshot("noon-one", "DOC1", patient_no="100004", time_kind="2"),
+            snapshot("noon-two", "DOC1", patient_no="100005", time_kind="2"),
+            snapshot("noon-room-two", "DOC2", patient_no="100006", time_kind="2"),
+        ],
+        config.doctor_room_map,
+    )
+
+    async def exercise_room_orders():
+        transport = httpx.ASGITransport(app=app)
+        async with (
+            httpx.AsyncClient(transport=transport, base_url="http://clinic") as morning_browser,
+            httpx.AsyncClient(transport=transport, base_url="http://clinic") as noon_browser,
+        ):
+            noon_browser.cookies.set("clinic_session", "2")
+            await morning_browser.post(
+                "/api/assign",
+                json={"encounter_key": "morning-extra", "room_id": 1},
+            )
+            await morning_browser.post(
+                "/api/action",
+                json={"encounter_key": "morning-extra", "action": "up"},
+            )
+            await morning_browser.post(
+                "/api/reorder",
+                json={"encounter_key": "morning-two", "position": 1},
+            )
+            return await morning_browser.get("/api/queue"), await noon_browser.get("/api/queue")
+
+    morning_response, noon_response = asyncio.run(exercise_room_orders())
+    morning = morning_response.json()
+    noon = noon_response.json()
+
+    assert morning_response.status_code == noon_response.status_code == 200
+    assert [entry["encounter_key"] for entry in morning["rooms"]["1"]["waiting"]] == [
+        "morning-two",
+        "morning-one",
+        "morning-extra",
+    ]
+    assert [entry["queue_position"] for entry in morning["rooms"]["1"]["waiting"]] == [1, 2, 3]
+    assert [entry["encounter_key"] for entry in noon["rooms"]["1"]["waiting"]] == [
+        "noon-one",
+        "noon-two",
+    ]
+    assert [entry["encounter_key"] for entry in noon["rooms"]["2"]["waiting"]] == [
+        "noon-room-two",
+    ]
+
+
+def test_old_room_order_migrates_into_contiguous_session_orders(tmp_path):
+    database_path = tmp_path / "legacy.sqlite3"
+    columns = [
+        "encounter_key",
+        "his_recno",
+        "patient_no",
+        "patient_name",
+        "doctor_code",
+        "visit_date",
+        "registration_time",
+        "his_gino1_raw",
+        "queue_number",
+        "his_state",
+        "raw_his_json",
+        "room_id",
+        "presence_status",
+        "queue_status",
+        "queue_position",
+        "overdue",
+        "new_highlight_until",
+        "manually_reordered_at",
+        "current_flag",
+        "room_override",
+        "presence_override",
+        "created_at",
+        "updated_at",
+    ]
+    records = [
+        ("morning-one", "1", "WAITING", 1, "N", ""),
+        ("noon-one", "2", "CALLED", 2, "N", ""),
+        ("noon-two", "2", "IN_CONSULTATION", 3, "B", ""),
+        ("morning-two", "1", "WAITING", 4, "N", ""),
+        ("morning-preregistered", "1", "WAITING", 5, "C", ""),
+    ]
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE encounter_state (
+                encounter_key TEXT PRIMARY KEY,
+                his_recno INTEGER NOT NULL,
+                patient_no TEXT NOT NULL,
+                patient_name TEXT NOT NULL,
+                doctor_code TEXT NOT NULL,
+                visit_date TEXT NOT NULL,
+                registration_time TEXT NOT NULL,
+                his_gino1_raw TEXT NOT NULL,
+                queue_number TEXT NOT NULL,
+                his_state TEXT NOT NULL,
+                raw_his_json TEXT NOT NULL,
+                room_id INTEGER CHECK (room_id IN (1, 2) OR room_id IS NULL),
+                presence_status TEXT NOT NULL CHECK (presence_status IN ('PRESENT', 'AWAY')),
+                queue_status TEXT NOT NULL DEFAULT 'WAITING',
+                queue_position INTEGER,
+                overdue INTEGER NOT NULL DEFAULT 0,
+                new_highlight_until TEXT,
+                manually_reordered_at TEXT,
+                current_flag INTEGER NOT NULL DEFAULT 0,
+                room_override INTEGER NOT NULL DEFAULT 0,
+                presence_override INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        insert_sql = (
+            f"INSERT INTO encounter_state ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})"
+        )
+        for index, (key, time_kind, old_status, position, treat, over) in enumerate(records):
+            raw_his = {
+                "TIME_KIND": time_kind,
+                "TREAT": treat,
+                "OVER": over,
+                "_DELETED": "False",
+            }
+            values = (
+                key,
+                index + 1,
+                f"10000{index + 1}",
+                f"Patient {index + 1}",
+                "DOC1",
+                date.today().isoformat(),
+                "0900",
+                "1510070001",
+                str(index + 1),
+                "IN_PROGRESS" if treat == "B" else "WAITING",
+                json.dumps(raw_his),
+                1,
+                "PRESENT",
+                old_status,
+                position,
+                int(key == "noon-two"),
+                None,
+                None,
+                int(old_status in {"CALLED", "IN_CONSULTATION"}),
+                1,
+                int(key != "morning-preregistered"),
+                f"2026-01-01T00:00:0{index}Z",
+                f"2026-01-01T00:00:0{index}Z",
+            )
+            connection.execute(insert_sql, values)
+
+    migrated = QueueStore(database_path)
+    morning = migrated.get_board(1)["rooms"][1]["waiting"]
+    morning_away = migrated.get_board(1)["rooms"][1]["away"]
+    noon = migrated.get_board(2)["rooms"][1]["waiting"]
+
+    assert [entry["encounter_key"] for entry in morning] == ["morning-one", "morning-two"]
+    assert [entry["queue_position"] for entry in morning] == [1, 2]
+    assert [entry["encounter_key"] for entry in noon] == ["noon-one", "noon-two"]
+    assert [entry["queue_position"] for entry in noon] == [1, 2]
+    assert all(entry["queue_status"] == "WAITING" for entry in morning + noon)
+    assert morning_away[0]["encounter_key"] == "morning-preregistered"
+    assert morning_away[0]["queue_status"] == "PREREGISTERED"
+    with sqlite3.connect(database_path) as connection:
+        migrated_sessions = dict(
+            connection.execute("SELECT encounter_key, time_kind FROM encounter_state")
+        )
+        current_flags = [row[0] for row in connection.execute("SELECT current_flag FROM encounter_state")]
+    assert migrated_sessions == {
+        "morning-one": 1,
+        "noon-one": 2,
+        "noon-two": 2,
+        "morning-two": 1,
+        "morning-preregistered": 1,
+    }
+    assert current_flags == [0, 0, 0, 0, 0]
