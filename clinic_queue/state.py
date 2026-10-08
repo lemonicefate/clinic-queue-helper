@@ -91,7 +91,7 @@ def resolve_his_state(fields: Mapping[str, Any]) -> ResolvedHISState:
     if over == "T" or treat == "Y":
         return ResolvedHISState(HISState.COMPLETED, None, False)
     if treat == "C":
-        return ResolvedHISState(HISState.PREREGISTERED, PresenceState.AWAY, True)
+        return ResolvedHISState(HISState.PREREGISTERED, None, True)
     if over == "F" or treat in {"B", "N"}:
         return ResolvedHISState(HISState.WAITING, PresenceState.PRESENT, True)
 
