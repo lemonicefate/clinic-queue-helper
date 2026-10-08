@@ -231,6 +231,13 @@
         return details.closest("[data-encounter-key]")?.dataset.encounterKey;
       }
 
+      function updateOpenRegistrationDetailKey(details) {
+        const encounterKey = encounterKeyForDetails(details);
+        if (!encounterKey) return;
+        if (details.open) openRegistrationDetailKeys.add(encounterKey);
+        else openRegistrationDetailKeys.delete(encounterKey);
+      }
+
       function saveOpenRegistrationDetails() {
         try {
           sessionStorage.setItem(
@@ -246,20 +253,14 @@
         const encounterKey = encounterKeyForDetails(details);
         if (!encounterKey) return;
         details.addEventListener("toggle", () => {
-          if (details.open) openRegistrationDetailKeys.add(encounterKey);
-          else openRegistrationDetailKeys.delete(encounterKey);
+          updateOpenRegistrationDetailKey(details);
           saveOpenRegistrationDetails();
         });
         if (openRegistrationDetailKeys.has(encounterKey)) details.open = true;
       });
 
       window.addEventListener("pagehide", () => {
-        registrationDetails.forEach((details) => {
-          const encounterKey = encounterKeyForDetails(details);
-          if (!encounterKey) return;
-          if (details.open) openRegistrationDetailKeys.add(encounterKey);
-          else openRegistrationDetailKeys.delete(encounterKey);
-        });
+        registrationDetails.forEach(updateOpenRegistrationDetailKey);
         saveOpenRegistrationDetails();
       });
 
