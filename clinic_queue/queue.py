@@ -741,7 +741,7 @@ class QueueStore:
                     continue
                 group = board
             else:
-                group = board["unconfirmed"] if entry["time_kind"] is None else board
+                group = board["unconfirmed"]
             if entry["queue_status"] == "COMPLETED":
                 group["completed"].append(entry)
             elif entry["queue_status"] == "INVALIDATED":
