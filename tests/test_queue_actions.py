@@ -190,6 +190,41 @@ def test_api_rejects_presence_actions_for_preregistered_encounters(tmp_path):
     assert away.status_code == 400
 
 
+def test_api_rejects_presence_actions_for_unknown_session_encounters(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("unknown-present", "DOC1", time_kind=None),
+            snapshot("unknown-away", "DOC1", presence=PresenceState.AWAY, time_kind=None),
+        ],
+        config.doctor_room_map,
+    )
+
+    async def change_presence():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            away = await client.post(
+                "/api/action",
+                json={"encounter_key": "unknown-present", "action": "away"},
+            )
+            present = await client.post(
+                "/api/action",
+                json={"encounter_key": "unknown-present", "action": "present"},
+            )
+            return_away = await client.post(
+                "/api/action",
+                json={"encounter_key": "unknown-away", "action": "present"},
+            )
+            return away, present, return_away
+
+    away, present, return_away = asyncio.run(change_presence())
+
+    assert away.status_code == 400
+    assert present.status_code == 400
+    assert return_away.status_code == 400
+
+
 def test_return_to_queue_appends_after_sync_and_preserves_other_waiters(tmp_path):
     config = create_config(tmp_path, {"DOC1": 1})
     app = create_app(config)

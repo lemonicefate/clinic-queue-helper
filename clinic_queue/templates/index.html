@@ -192,10 +192,12 @@
           </div>
           {% if not read_only and encounter.queue_status == 'WAITING' %}
             <div class="queue-actions" aria-label="候診操作">
-              {% if encounter.presence_status == 'AWAY' %}
-                <button type="button" data-action="present" data-encounter-key="{{ encounter.encounter_key }}">回候診</button>
-              {% else %}
-                <button type="button" data-action="away" data-encounter-key="{{ encounter.encounter_key }}">暫離</button>
+              {% if encounter.time_kind is not none %}
+                {% if encounter.presence_status == 'AWAY' %}
+                  <button type="button" data-action="present" data-encounter-key="{{ encounter.encounter_key }}">回候診</button>
+                {% else %}
+                  <button type="button" data-action="away" data-encounter-key="{{ encounter.encounter_key }}">暫離</button>
+                {% endif %}
               {% endif %}
               {% if encounter.room_id and encounter.presence_status == 'PRESENT' %}
                 {% if encounter.time_kind is not none %}
