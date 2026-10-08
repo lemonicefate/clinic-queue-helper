@@ -247,7 +247,7 @@ def test_incremental_his_change_uses_ccdoc_filter_and_preserves_presence_and_ove
     make_source(config, [rg_row("100001", doctor="DOC2", treat="C")])
     poller.poll_once()
 
-    entry = store.get_board()["rooms"][2]["away"][0]
+    entry = store.get_board()["rooms"][2]["preregistered"][0]
     assert entry["doctor_code"] == "DOC2"
     assert entry["room_id"] == 2
     assert "room_override" not in entry
