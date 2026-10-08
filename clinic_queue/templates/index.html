@@ -354,6 +354,7 @@
       let pendingRoomCodeSaves = 0;
       let pollInProgress = false;
       let draggedPatient = null;
+      let activeQueuePointerId = null;
       let pendingReorderRequests = 0;
       const clinicSessionPicker = document.querySelector("#clinic-session");
       const registrationDetailsStorageKey = "clinicQueue.openRegistrationDetails.v1";
@@ -409,12 +410,97 @@
       });
 
       function maybeApplyPendingRefresh() {
-        if (!pendingRefresh || pendingRoomCodeSaves > 0 || draggedPatient || pendingReorderRequests > 0) return;
+        if (!pendingRefresh || pendingRoomCodeSaves > 0 || draggedPatient || activeQueuePointerId !== null || pendingReorderRequests > 0) return;
         const active = document.activeElement;
         if (active?.matches("[data-room-doctor-code]")) return;
         if (active === clinicSessionPicker) return;
         pendingRefresh = false;
         window.location.reload();
+      }
+
+      function finishQueuePointerInteraction(event) {
+        if (activeQueuePointerId === null) return;
+        if (event?.pointerId !== undefined && event.pointerId !== activeQueuePointerId) return;
+        activeQueuePointerId = null;
+        window.setTimeout(maybeApplyPendingRefresh, 0);
+      }
+
+      window.addEventListener("pointerup", finishQueuePointerInteraction);
+      window.addEventListener("pointercancel", finishQueuePointerInteraction);
+      window.addEventListener("blur", () => finishQueuePointerInteraction());
+
+      function normalizeQueueStateForComparison(value) {
+        if (Array.isArray(value)) {
+          const normalized = value.map(normalizeQueueStateForComparison);
+          if (normalized.every((item) => item && typeof item === "object" && typeof item.encounter_key === "string")) {
+            return normalized.sort((left, right) => left.encounter_key.localeCompare(right.encounter_key));
+          }
+          return normalized;
+        }
+        if (value && typeof value === "object") {
+          return Object.fromEntries(
+            Object.entries(value)
+              .filter(([key]) => !["queue_position", "manually_reordered_at", "updated_at"].includes(key))
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([key, item]) => [key, normalizeQueueStateForComparison(item)]),
+          );
+        }
+        return value;
+      }
+
+      function stableQueueState(value) {
+        if (Array.isArray(value)) return value.map(stableQueueState);
+        if (value && typeof value === "object") {
+          return Object.fromEntries(
+            Object.entries(value)
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([key, item]) => [key, stableQueueState(item)]),
+          );
+        }
+        return value;
+      }
+
+      function queueStatesEqual(left, right) {
+        return JSON.stringify(stableQueueState(left)) === JSON.stringify(stableQueueState(right));
+      }
+
+      function sameQueueContent(left, right) {
+        return JSON.stringify(normalizeQueueStateForComparison(left))
+          === JSON.stringify(normalizeQueueStateForComparison(right));
+      }
+
+      function applyWaitingOrder(queueState, roomId, timeKind) {
+        const roomColumn = document.querySelector(`.room[data-room-column="${roomId}"]`);
+        const waiting = queueState?.rooms?.[String(roomId)]?.waiting;
+        if (!roomColumn || !Array.isArray(waiting)) return false;
+
+        const cards = Array.from(roomColumn.querySelectorAll(".waiting-patient"))
+          .filter((card) => card.dataset.roomId === String(roomId) && card.dataset.timeKind === String(timeKind));
+        const orderedEncounters = waiting
+          .filter((encounter) => String(encounter.room_id) === String(roomId)
+            && String(encounter.time_kind) === String(timeKind))
+          .slice()
+          .sort((left, right) => Number(left.queue_position) - Number(right.queue_position));
+        if (cards.length !== orderedEncounters.length) return false;
+
+        const cardsByKey = new Map(cards.map((card) => [card.dataset.encounterKey, card]));
+        if (orderedEncounters.some((encounter) => !cardsByKey.has(encounter.encounter_key))) return false;
+        const labels = orderedEncounters.map((encounter) =>
+          cardsByKey.get(encounter.encounter_key).querySelector(".patient-identity > strong"));
+        if (labels.some((label) => !label)) return false;
+
+        let listBoundary = cards[0];
+        while (listBoundary && !listBoundary.matches("h3")) listBoundary = listBoundary.nextElementSibling;
+        if (!listBoundary) return false;
+
+        orderedEncounters.forEach((encounter, index) => {
+          const card = cardsByKey.get(encounter.encounter_key);
+          roomColumn.insertBefore(card, listBoundary);
+          card.dataset.position = String(index + 1);
+          const label = card.querySelector(".patient-identity > strong");
+          label.textContent = label.textContent.replace(/^\s*\d+\.\s*/, `${index + 1}. `);
+        });
+        return true;
       }
 
       function requestPageRefresh() {
@@ -435,7 +521,8 @@
         }
       }
 
-      async function submitQueueChange(path, body, focusEncounterKey = null) {
+      async function submitQueueChange(path, body, focusEncounterKey = null, onSuccess = null) {
+        const previousQueueState = lastQueueState;
         if (focusEncounterKey) {
           try {
             sessionStorage.setItem(reorderedFocusStorageKey, focusEncounterKey);
@@ -445,8 +532,17 @@
         }
         pendingReorderRequests += 1;
         try {
-          await postJson(path, body);
-          requestPageRefresh();
+          const nextQueueState = await postJson(path, body);
+          if (onSuccess && previousQueueState && nextQueueState) {
+            if (!Object.prototype.hasOwnProperty.call(nextQueueState, "his_stale")) {
+              nextQueueState.his_stale = previousQueueState.his_stale;
+            }
+            if (!Object.prototype.hasOwnProperty.call(nextQueueState, "storage_error")) {
+              nextQueueState.storage_error = previousQueueState.storage_error;
+            }
+          }
+          if (onSuccess) onSuccess(nextQueueState, previousQueueState);
+          else requestPageRefresh();
         } catch (error) {
           showActionError(error.message);
         } finally {
@@ -458,11 +554,13 @@
       window.setInterval(async () => {
         if (pollInProgress) return;
         pollInProgress = true;
+        const comparedQueueState = lastQueueState;
         try {
           const response = await fetch("/api/queue", { cache: "no-store" });
           if (!response.ok) return;
           const nextState = await response.json();
-          if (JSON.stringify(nextState) !== JSON.stringify(lastQueueState)) {
+          if (comparedQueueState !== lastQueueState) return;
+          if (!queueStatesEqual(nextState, lastQueueState)) {
             requestPageRefresh();
           }
         } catch (_) {
@@ -482,6 +580,7 @@
           const result = await response.json();
           throw new Error(result.detail || "操作失敗，請重新整理後再試。");
         }
+        return response.json();
       }
 
       const actionError = document.querySelector("[data-action-error]");
@@ -593,6 +692,12 @@
       }
 
       document.querySelectorAll(".waiting-patient").forEach((card) => {
+        card.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0 || event.isPrimary === false || activeQueuePointerId !== null) return;
+          const target = event.target;
+          if (target instanceof Element && target.closest("button, input, select, textarea, a, summary, details")) return;
+          activeQueuePointerId = event.pointerId;
+        });
         card.addEventListener("keydown", (event) => {
           if (event.target !== card || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
           event.preventDefault();
@@ -617,6 +722,7 @@
         });
         card.addEventListener("dragend", () => {
           draggedPatient = null;
+          finishQueuePointerInteraction();
           clearDropIndicators();
           maybeApplyPendingRefresh();
         });
@@ -633,11 +739,27 @@
           const insertAfter = event.clientY >= bounds.top + bounds.height / 2;
           draggedPatient = null;
           clearDropIndicators();
-          await submitQueueChange("/api/reorder", {
-            encounter_key: source.dataset.encounterKey,
-            target_encounter_key: card.dataset.encounterKey,
-            insert_after: insertAfter,
-          });
+          await submitQueueChange(
+            "/api/reorder",
+            {
+              encounter_key: source.dataset.encounterKey,
+              target_encounter_key: card.dataset.encounterKey,
+              insert_after: insertAfter,
+            },
+            null,
+            (nextState, previousState) => {
+              if (pendingRoomCodeSaves > 0 || !sameQueueContent(previousState, nextState)) {
+                requestPageRefresh();
+                return;
+              }
+              if (!applyWaitingOrder(nextState, source.dataset.roomId, source.dataset.timeKind)) {
+                requestPageRefresh();
+                return;
+              }
+              lastQueueState = nextState;
+              pendingRefresh = false;
+            },
+          );
         });
       });
 
