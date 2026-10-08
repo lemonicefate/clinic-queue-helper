@@ -116,6 +116,33 @@ def test_room_lists_waiting_away_and_preregistered_in_order_without_preregistere
     assert "暫未到診" not in response.text
 
 
+def test_unknown_session_waiting_card_stays_visible_without_presence_actions(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [snapshot("unknown-session", "DOC1", time_kind=None)],
+        config.doctor_room_map,
+    )
+
+    async def get_page():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.get("/?room=1")
+
+    response = asyncio.run(get_page())
+
+    assert response.status_code == 200
+    cards = re.findall(
+        r'<article\b[^>]*data-encounter-key="unknown-session"[^>]*>.*?</article>',
+        response.text,
+        flags=re.DOTALL,
+    )
+    assert len(cards) == 1
+    assert "診別未確認" in cards[0]
+    assert 'data-action="present"' not in cards[0]
+    assert 'data-action="away"' not in cards[0]
+
+
 def test_single_room_views_filter_columns_and_keep_queue_controls(tmp_path):
     app = make_ready_app(tmp_path)
 

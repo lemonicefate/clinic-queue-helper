@@ -622,6 +622,10 @@ class QueueStore:
             row = self._require_active_row(connection, encounter_key)
             if row["queue_status"] != "WAITING":
                 raise QueueError("Presence can only be changed for waiting encounters.")
+            if row["time_kind"] is None:
+                raise QueueError(
+                    "Presence can only be changed for encounters with a known clinic session."
+                )
             old_presence = str(row["presence_status"])
             room_id = row["room_id"]
             time_kind = row["time_kind"]
