@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Any, Mapping
 
 
@@ -23,17 +23,32 @@ class PresenceState(str, Enum):
     AWAY = "AWAY"
 
 
-TIME_KIND_LABELS = {1: "早診", 2: "午診", 3: "晚診"}
+class ClinicSession(IntEnum):
+    MORNING = 1
+    AFTERNOON = 2
+    EVENING = 3
+
+    @property
+    def label(self) -> str:
+        return {
+            ClinicSession.MORNING: "早診",
+            ClinicSession.AFTERNOON: "午診",
+            ClinicSession.EVENING: "晚診",
+        }[self]
 
 
-def normalize_time_kind(value: Any) -> int | None:
+def normalize_time_kind(value: Any) -> ClinicSession | None:
     """Return a supported clinic-session identity, leaving uncertain values unknown."""
     if value is None:
         return None
+    if isinstance(value, ClinicSession):
+        return value
     if isinstance(value, bytes):
         value = value.decode("ascii", errors="replace")
     normalized = str(value).strip()
-    return int(normalized) if normalized in {"1", "2", "3"} else None
+    if normalized not in {"1", "2", "3"}:
+        return None
+    return ClinicSession(int(normalized))
 
 
 @dataclass(frozen=True)

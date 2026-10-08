@@ -15,15 +15,15 @@ from pydantic import BaseModel
 from .config import AppConfig
 from .polling import HISPoller
 from .queue import QueueError, QueueStore
-from .state import PresenceState, normalize_time_kind
+from .state import ClinicSession, PresenceState, normalize_time_kind
 
 
 _TEMPLATE_DIR = Path(__file__).with_name("templates")
 logger = logging.getLogger("clinic_queue.app")
 
 
-def _selected_time_kind(request: Request) -> int:
-    return normalize_time_kind(request.cookies.get("clinic_session")) or 1
+def _selected_time_kind(request: Request) -> ClinicSession:
+    return normalize_time_kind(request.cookies.get("clinic_session")) or ClinicSession.MORNING
 
 
 class RoomAssignment(BaseModel):

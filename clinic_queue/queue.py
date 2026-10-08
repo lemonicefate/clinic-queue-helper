@@ -6,21 +6,40 @@ import json
 import logging
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from .his import EncounterSnapshot
 from .state import (
+    ClinicSession,
     HISState,
     PresenceState,
-    TIME_KIND_LABELS,
     normalize_time_kind,
     resolve_his_state,
 )
 
 
 logger = logging.getLogger("clinic_queue.queue")
+
+
+@dataclass(frozen=True)
+class QueueScope:
+    room_id: int
+    time_kind: ClinicSession
+
+
+_QUEUE_STATUS_BY_HIS_STATE = {
+    HISState.INVALID: "INVALIDATED",
+    HISState.COMPLETED: "COMPLETED",
+    HISState.PREREGISTERED: "PREREGISTERED",
+    HISState.WAITING: "WAITING",
+}
+
+
+def _queue_status(his_state: HISState) -> str:
+    return _QUEUE_STATUS_BY_HIS_STATE[his_state]
 
 
 class QueueError(ValueError):
@@ -110,11 +129,7 @@ class QueueStore:
         for row in rows:
             raw_his = json.loads(str(row["raw_his_json"]))
             resolved = resolve_his_state(raw_his)
-            queue_status = {
-                HISState.INVALID: "INVALIDATED",
-                HISState.COMPLETED: "COMPLETED",
-                HISState.PREREGISTERED: "PREREGISTERED",
-            }.get(resolved.state, "WAITING")
+            queue_status = _queue_status(resolved.state)
             time_kind = normalize_time_kind(raw_his.get("TIME_KIND"))
             presence = (
                 str(row["presence_status"])
@@ -138,7 +153,7 @@ class QueueStore:
                 WHERE encounter_key = ?
                 """,
                 (
-                    time_kind,
+                    None if time_kind is None else int(time_kind),
                     resolved.state.value,
                     queue_status,
                     presence,
@@ -150,7 +165,7 @@ class QueueStore:
         QueueStore._normalize_all_room_positions(connection, timestamp)
 
     @staticmethod
-    def _new_room_position(connection: sqlite3.Connection, room_id: int, time_kind: int) -> int:
+    def _new_room_position(connection: sqlite3.Connection, scope: QueueScope) -> int:
         result = connection.execute(
             """
             SELECT COALESCE(MAX(queue_position), 0) + 1
@@ -158,15 +173,14 @@ class QueueStore:
             WHERE room_id = ? AND time_kind = ? AND presence_status = 'PRESENT'
               AND queue_status NOT IN ('COMPLETED', 'INVALIDATED')
             """,
-            (room_id, time_kind),
+            (scope.room_id, int(scope.time_kind)),
         ).fetchone()
         return int(result[0])
 
     @staticmethod
     def _normalize_room_positions(
         connection: sqlite3.Connection,
-        room_id: int,
-        time_kind: int,
+        scope: QueueScope,
         timestamp: str,
     ) -> None:
         rows = connection.execute(
@@ -177,7 +191,7 @@ class QueueStore:
             ORDER BY CASE WHEN queue_position IS NULL THEN 1 ELSE 0 END,
                      queue_position, created_at, encounter_key
             """,
-            (room_id, time_kind),
+            (scope.room_id, int(scope.time_kind)),
         ).fetchall()
         changed_positions = [
             (position, timestamp, str(row["encounter_key"]))
@@ -202,7 +216,9 @@ class QueueStore:
             ).fetchall()
             for row in time_kinds:
                 QueueStore._normalize_room_positions(
-                    connection, room_id, int(row["time_kind"]), timestamp
+                    connection,
+                    QueueScope(room_id, ClinicSession(int(row["time_kind"]))),
+                    timestamp,
                 )
             connection.execute(
                 "UPDATE encounter_state SET queue_position = NULL WHERE room_id = ? AND time_kind IS NULL",
@@ -241,11 +257,14 @@ class QueueStore:
                 if existing is None:
                     room_id = mapped_room
                     presence = encounter.initial_presence or PresenceState.PRESENT
+                    scope = (
+                        QueueScope(room_id, time_kind)
+                        if room_id is not None and time_kind is not None
+                        else None
+                    )
                     position = (
-                        self._new_room_position(connection, room_id, time_kind)
-                        if room_id is not None
-                        and time_kind is not None
-                        and presence is PresenceState.PRESENT
+                        self._new_room_position(connection, scope)
+                        if scope is not None and presence is PresenceState.PRESENT
                         else None
                     )
                     created_at = timestamp
@@ -269,23 +288,23 @@ class QueueStore:
                     )
                     old_position = existing["queue_position"]
                     same_room = existing["room_id"] == room_id
-                    same_group = same_room and existing["time_kind"] == time_kind
+                    same_group = same_room and existing["time_kind"] == (
+                        None if time_kind is None else int(time_kind)
+                    )
                     if room_id is None or time_kind is None or presence is PresenceState.AWAY:
                         position = None
                     elif same_group and old_position is not None:
                         position = int(old_position)
                     else:
-                        position = self._new_room_position(connection, room_id, time_kind)
+                        position = self._new_room_position(
+                            connection, QueueScope(room_id, time_kind)
+                        )
                     created_at = str(existing["created_at"])
                     overdue = int(existing["overdue"])
                     highlight_until = existing["new_highlight_until"]
                     reordered_at = existing["manually_reordered_at"]
 
-                queue_status = {
-                    HISState.INVALID: "INVALIDATED",
-                    HISState.COMPLETED: "COMPLETED",
-                    HISState.PREREGISTERED: "PREREGISTERED",
-                }.get(encounter.his_state, "WAITING")
+                queue_status = _queue_status(encounter.his_state)
                 if queue_status in ("COMPLETED", "INVALIDATED"):
                     position = None
 
@@ -334,7 +353,7 @@ class QueueStore:
                         encounter.queue_number,
                         encounter.his_state.value,
                         json.dumps(encounter.raw_his, ensure_ascii=False),
-                        time_kind,
+                        None if time_kind is None else int(time_kind),
                         room_id,
                         presence.value,
                         queue_status,
@@ -393,10 +412,14 @@ class QueueStore:
                 raise QueueError(f"Encounter not found: {encounter_key}")
             if str(row["queue_status"]) in ("COMPLETED", "INVALIDATED"):
                 raise QueueError("Completed or invalidated encounters cannot be assigned.")
+            scope = (
+                QueueScope(room_id, ClinicSession(int(row["time_kind"])))
+                if row["time_kind"] is not None
+                else None
+            )
             position = (
-                self._new_room_position(connection, room_id, int(row["time_kind"]))
-                if row["presence_status"] == PresenceState.PRESENT.value
-                and row["time_kind"] is not None
+                self._new_room_position(connection, scope)
+                if row["presence_status"] == PresenceState.PRESENT.value and scope is not None
                 else None
             )
             connection.execute(
@@ -409,11 +432,14 @@ class QueueStore:
             )
             timestamp = self._now()
             old_room_id = row["room_id"]
-            time_kind = row["time_kind"]
-            if old_room_id in (1, 2) and time_kind is not None:
-                self._normalize_room_positions(connection, int(old_room_id), int(time_kind), timestamp)
-            if time_kind is not None:
-                self._normalize_room_positions(connection, room_id, int(time_kind), timestamp)
+            if scope is not None:
+                if old_room_id in (1, 2):
+                    self._normalize_room_positions(
+                        connection,
+                        QueueScope(int(old_room_id), scope.time_kind),
+                        timestamp,
+                    )
+                self._normalize_room_positions(connection, scope, timestamp)
             updated = connection.execute(
                 "SELECT * FROM encounter_state WHERE encounter_key = ?",
                 (encounter_key,),
@@ -439,6 +465,16 @@ class QueueStore:
         if str(row["queue_status"]) in ("COMPLETED", "INVALIDATED"):
             raise QueueError("Completed or invalidated encounters cannot be changed.")
         return row
+
+    @staticmethod
+    def _require_reorder_scope(row: sqlite3.Row) -> QueueScope:
+        if (
+            row["room_id"] is None
+            or row["time_kind"] is None
+            or row["presence_status"] != PresenceState.PRESENT.value
+        ):
+            raise QueueError("Only present, assigned encounters with a known clinic session can be reordered.")
+        return QueueScope(int(row["room_id"]), ClinicSession(int(row["time_kind"])))
 
     @staticmethod
     def _log_action(
@@ -473,14 +509,19 @@ class QueueStore:
             old_presence = str(row["presence_status"])
             room_id = row["room_id"]
             time_kind = row["time_kind"]
+            scope = (
+                QueueScope(int(room_id), ClinicSession(int(time_kind)))
+                if room_id is not None and time_kind is not None
+                else None
+            )
             if presence is PresenceState.AWAY:
                 position = None
             elif (
                 old_presence == PresenceState.AWAY.value
                 and room_id is not None
-                and time_kind is not None
+                and scope is not None
             ):
-                position = self._new_room_position(connection, int(room_id), int(time_kind))
+                position = self._new_room_position(connection, scope)
             else:
                 position = row["queue_position"]
             connection.execute(
@@ -492,8 +533,8 @@ class QueueStore:
                 """,
                 (presence.value, position, timestamp, encounter_key),
             )
-            if room_id in (1, 2) and time_kind is not None:
-                self._normalize_room_positions(connection, int(room_id), int(time_kind), timestamp)
+            if scope is not None:
+                self._normalize_room_positions(connection, scope, timestamp)
             self._log_action(connection, encounter_key, "presence", old_presence, presence.value)
             logger.info("Set encounter %s presence to %s", encounter_key, presence.value)
             updated = connection.execute(
@@ -524,9 +565,7 @@ class QueueStore:
             return self._row_to_dict(updated)
 
     @staticmethod
-    def _ordered_room_keys(
-        connection: sqlite3.Connection, room_id: int, time_kind: int
-    ) -> list[str]:
+    def _ordered_room_keys(connection: sqlite3.Connection, scope: QueueScope) -> list[str]:
         rows = connection.execute(
             """
             SELECT encounter_key FROM encounter_state
@@ -534,7 +573,7 @@ class QueueStore:
               AND queue_status NOT IN ('COMPLETED', 'INVALIDATED')
             ORDER BY queue_position, created_at, encounter_key
             """,
-            (room_id, time_kind),
+            (scope.room_id, int(scope.time_kind)),
         ).fetchall()
         return [str(row["encounter_key"]) for row in rows]
 
@@ -546,15 +585,10 @@ class QueueStore:
         timestamp: str,
     ) -> dict[str, Any]:
         row = self._require_active_row(connection, encounter_key)
-        if (
-            row["room_id"] is None
-            or row["time_kind"] is None
-            or row["presence_status"] != PresenceState.PRESENT.value
-        ):
-            raise QueueError("Only present, assigned encounters with a known clinic session can be reordered.")
+        scope = self._require_reorder_scope(row)
         if type(position) is not int or position < 1:
             raise QueueError("position must be a positive integer.")
-        keys = self._ordered_room_keys(connection, int(row["room_id"]), int(row["time_kind"]))
+        keys = self._ordered_room_keys(connection, scope)
         old_position = keys.index(encounter_key) + 1
         keys.remove(encounter_key)
         keys.insert(min(position - 1, len(keys)), encounter_key)
@@ -605,17 +639,8 @@ class QueueStore:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_active_row(connection, encounter_key)
-            if (
-                row["room_id"] is None
-                or row["time_kind"] is None
-                or row["presence_status"] != PresenceState.PRESENT.value
-            ):
-                raise QueueError(
-                    "Only present, assigned encounters with a known clinic session can be reordered."
-                )
-            keys = self._ordered_room_keys(
-                connection, int(row["room_id"]), int(row["time_kind"])
-            )
+            scope = self._require_reorder_scope(row)
+            keys = self._ordered_room_keys(connection, scope)
             current = keys.index(encounter_key) + 1
             return self._reorder_in_transaction(
                 connection,
@@ -641,7 +666,11 @@ class QueueStore:
             connection.execute("DELETE FROM encounter_state WHERE encounter_key = ?", (encounter_key,))
             if row is not None and row["room_id"] in (1, 2) and row["time_kind"] is not None:
                 self._normalize_room_positions(
-                    connection, int(row["room_id"]), int(row["time_kind"]), self._now()
+                    connection,
+                    QueueScope(
+                        int(row["room_id"]), ClinicSession(int(row["time_kind"]))
+                    ),
+                    self._now(),
                 )
 
     @staticmethod
@@ -655,7 +684,11 @@ class QueueStore:
         entry["presence_override"] = bool(entry["presence_override"])
         entry["overdue"] = bool(entry["overdue"])
         entry.pop("current_flag", None)
-        entry["clinic_session"] = TIME_KIND_LABELS.get(entry["time_kind"], "診別未確認")
+        entry["clinic_session"] = (
+            ClinicSession(int(entry["time_kind"])).label
+            if entry["time_kind"] is not None
+            else "診別未確認"
+        )
         highlight_until = entry["new_highlight_until"]
         try:
             expires = datetime.fromisoformat(str(highlight_until)) if highlight_until else None
@@ -666,9 +699,10 @@ class QueueStore:
             entry["is_new"] = False
         return entry
 
-    def get_board(self, time_kind: int | None = None) -> dict[str, Any]:
+    def get_board(self, time_kind: ClinicSession | int | None = None) -> dict[str, Any]:
         """Return one session's queues and a separate group for uncertain HIS sessions."""
-        if time_kind not in (None, 1, 2, 3):
+        selected_session = normalize_time_kind(time_kind) if time_kind is not None else None
+        if time_kind is not None and selected_session is None:
             raise QueueError("time_kind must be 1, 2, or 3.")
 
         def empty_rooms() -> dict[int, dict[str, list[dict[str, Any]]]]:
@@ -678,7 +712,7 @@ class QueueStore:
             }
 
         board: dict[str, Any] = {
-            "selected_time_kind": time_kind,
+            "selected_time_kind": None if selected_session is None else int(selected_session),
             "rooms": empty_rooms(),
             "unassigned": [],
             "completed": [],
@@ -702,8 +736,8 @@ class QueueStore:
 
         for row in rows:
             entry = self._row_to_dict(row)
-            if entry["time_kind"] is not None and time_kind is not None:
-                if entry["time_kind"] != time_kind:
+            if entry["time_kind"] is not None:
+                if selected_session is not None and entry["time_kind"] != int(selected_session):
                     continue
                 group = board
             else:
