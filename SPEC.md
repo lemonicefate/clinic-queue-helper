@@ -1216,6 +1216,8 @@ Do not require WebSocket.
 
 User actions should immediately update server state and then naturally synchronize other clients. A browser with the session selector or physician-code field focused defers its page reload until focus leaves and any save finishes; other browsers continue to receive updates normally.
 
+When a full-page refresh occurs, restore expanded per-patient registration details for matching encounters in the same browser tab. New encounters remain collapsed. This state does not change the default collapsed state of the top-level `已完成` and `診別未確認` sections.
+
 Queue data is shared across browsers, while each browser's selected `TIME_KIND` is a browser-local preference. The selected session must be applied consistently to the initial page and subsequent queue polling.
 
 Target normal synchronization:
@@ -1852,7 +1854,7 @@ Give each `(room, TIME_KIND)` pair its own local candidate order. Derive room me
 - Use `TIME_KIND` as the session identity: `1` 早診, `2` 午診, `3` 晚診.
 - Store the selected session as a browser-local preference, defaulting to 早診. Do not infer a session from the current clock in this release.
 - Store the 一診 and 二診 physician filters in the server's SQLite database so all workstations share them. Save an edited field on blur; a blank value means that room has no session and no queue. Reject duplicate non-empty values. The latest accepted save wins, and HIS reconciliation reads the persisted filters inside its write transaction so a stale poll cannot restore an older mapping.
-- Suppress page reloads while the clinic-session selector or a physician-filter field has focus. After focus leaves the control, apply one pending refresh. Do not reload while a physician-filter save is in flight.
+- Suppress page reloads while the clinic-session selector or a physician-filter field has focus. After focus leaves the control, apply one pending refresh. Do not reload while a physician-filter save is in flight. Preserve each encounter card's registration-details disclosure state in the current tab across full-page refreshes; new encounters start collapsed.
 - Apply the selected session to every visible patient category and to the initial page and subsequent queue polling.
 - Keep missing/unsupported `TIME_KIND` records visible in a separate `診別未確認` group across selected-session views.
 - Classify completed records first when `OVER=T` or `TREAT=Y`; otherwise classify `TREAT=C` as 未報到; classify other active records, including `TREAT=B`, `OVER=F`, and unknown active combinations, as 候診. Deleted records remain invalidated and excluded from active lists.
