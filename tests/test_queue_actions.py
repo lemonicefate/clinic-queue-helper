@@ -77,7 +77,12 @@ def test_queue_exposes_only_his_supported_visit_categories(tmp_path):
     )
 
     board = store.get_board()
-    entries = board["rooms"][1]["waiting"] + board["rooms"][1]["away"] + board["completed"]
+    entries = (
+        board["rooms"][1]["waiting"]
+        + board["rooms"][1]["away"]
+        + board["rooms"][1]["preregistered"]
+        + board["completed"]
+    )
 
     assert {entry["queue_status"] for entry in entries} == {
         "WAITING",
@@ -85,6 +90,194 @@ def test_queue_exposes_only_his_supported_visit_categories(tmp_path):
         "COMPLETED",
     }
     assert all("current_flag" not in entry for entry in entries)
+
+
+def test_queue_api_separates_preregistration_from_staff_temporary_away(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("waiting", "DOC1", patient_no="100001"),
+            snapshot("temporary-away", "DOC1", presence=PresenceState.AWAY, patient_no="100002"),
+            snapshot("preregistered", "DOC1", state=HISState.PREREGISTERED, patient_no="100003"),
+            snapshot("completed", "DOC1", state=HISState.COMPLETED, patient_no="100004"),
+        ],
+        config.doctor_room_map,
+    )
+
+    async def get_queue():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.get("/api/queue")
+
+    response = asyncio.run(get_queue())
+
+    assert response.status_code == 200
+    board = response.json()
+    assert [entry["encounter_key"] for entry in board["rooms"]["1"]["waiting"]] == ["waiting"]
+    assert [entry["encounter_key"] for entry in board["rooms"]["1"]["away"]] == ["temporary-away"]
+    assert [entry["encounter_key"] for entry in board["rooms"]["1"]["preregistered"]] == ["preregistered"]
+    assert [entry["encounter_key"] for entry in board["completed"]] == ["completed"]
+
+
+def test_his_update_moves_preregistered_encounter_to_waiting_at_tail(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    app = create_app(config)
+    store = app.state.queue_store
+    store.reconcile(
+        [
+            snapshot("first", "DOC1", patient_no="100001"),
+            snapshot("preregistered", "DOC1", presence=None, state=HISState.PREREGISTERED, patient_no="100002"),
+            snapshot("second", "DOC1", patient_no="100003"),
+        ],
+        config.doctor_room_map,
+    )
+
+    async def read_queue():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            before = await client.get("/api/queue")
+            store.reconcile(
+                [
+                    snapshot("first", "DOC1", patient_no="100001"),
+                    snapshot("preregistered", "DOC1", patient_no="100002"),
+                    snapshot("second", "DOC1", patient_no="100003"),
+                ],
+                config.doctor_room_map,
+            )
+            after = await client.get("/api/queue")
+            return before, after
+
+    before, after = asyncio.run(read_queue())
+
+    assert before.status_code == after.status_code == 200
+    assert [entry["encounter_key"] for entry in before.json()["rooms"]["1"]["waiting"]] == [
+        "first",
+        "second",
+    ]
+    assert [entry["encounter_key"] for entry in before.json()["rooms"]["1"]["preregistered"]] == [
+        "preregistered",
+    ]
+    after_waiting = after.json()["rooms"]["1"]["waiting"]
+    assert [entry["encounter_key"] for entry in after_waiting] == ["first", "second", "preregistered"]
+    assert after_waiting[-1]["queue_position"] == 3
+
+
+def test_api_rejects_presence_actions_for_preregistered_encounters(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [snapshot("preregistered", "DOC1", state=HISState.PREREGISTERED)],
+        config.doctor_room_map,
+    )
+
+    async def change_presence():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            returned = await client.post(
+                "/api/action",
+                json={"encounter_key": "preregistered", "action": "present"},
+            )
+            away = await client.post(
+                "/api/action",
+                json={"encounter_key": "preregistered", "action": "away"},
+            )
+            return returned, away
+
+    returned, away = asyncio.run(change_presence())
+
+    assert returned.status_code == 400
+    assert away.status_code == 400
+
+
+def test_api_rejects_presence_actions_for_unknown_session_encounters(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("unknown-present", "DOC1", time_kind=None),
+            snapshot("unknown-away", "DOC1", presence=PresenceState.AWAY, time_kind=None),
+        ],
+        config.doctor_room_map,
+    )
+
+    async def change_presence():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            away = await client.post(
+                "/api/action",
+                json={"encounter_key": "unknown-present", "action": "away"},
+            )
+            present = await client.post(
+                "/api/action",
+                json={"encounter_key": "unknown-present", "action": "present"},
+            )
+            return_away = await client.post(
+                "/api/action",
+                json={"encounter_key": "unknown-away", "action": "present"},
+            )
+            return away, present, return_away
+
+    away, present, return_away = asyncio.run(change_presence())
+
+    assert away.status_code == 400
+    assert present.status_code == 400
+    assert return_away.status_code == 400
+
+
+def test_return_to_queue_appends_after_sync_and_preserves_other_waiters(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("one", "DOC1", patient_no="100001"),
+            snapshot("returning", "DOC1", patient_no="100002"),
+            snapshot("three", "DOC1", patient_no="100003"),
+            snapshot("preregistered", "DOC1", state=HISState.PREREGISTERED, patient_no="100004"),
+        ],
+        config.doctor_room_map,
+    )
+
+    async def exercise_return():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            away = await client.post(
+                "/api/action",
+                json={"encounter_key": "returning", "action": "away"},
+            )
+            app.state.queue_store.reconcile(
+                [
+                    snapshot("one", "DOC1", patient_no="100001"),
+                    snapshot("returning", "DOC1", patient_no="100002"),
+                    snapshot("three", "DOC1", patient_no="100003"),
+                    snapshot("preregistered", "DOC1", state=HISState.PREREGISTERED, patient_no="100004"),
+                ],
+                config.doctor_room_map,
+            )
+            after_sync = await client.get("/api/queue")
+            returned = await client.post(
+                "/api/action",
+                json={"encounter_key": "returning", "action": "present"},
+            )
+            return away, after_sync, returned
+
+    away, after_sync, returned = asyncio.run(exercise_return())
+
+    assert away.status_code == 200
+    assert after_sync.status_code == 200
+    assert [entry["encounter_key"] for entry in after_sync.json()["rooms"]["1"]["waiting"]] == [
+        "one",
+        "three",
+    ]
+    assert [entry["encounter_key"] for entry in after_sync.json()["rooms"]["1"]["away"]] == [
+        "returning",
+    ]
+    assert returned.status_code == 200
+    assert [entry["encounter_key"] for entry in returned.json()["rooms"]["1"]["waiting"]] == [
+        "one",
+        "three",
+        "returning",
+    ]
 
 
 def test_server_operation_order_is_last_write_wins_and_survives_restart(tmp_path):
@@ -139,6 +332,132 @@ def test_drag_drop_reorder_api_accepts_target_position(tmp_path):
     ]
 
 
+def test_drag_reorder_inserts_relative_to_target_and_persists_after_restart(tmp_path):
+    config, _ = ready_store(tmp_path)
+    app = create_app(config)
+
+    async def apply_drop_positions():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            before = await client.post(
+                "/api/reorder",
+                json={
+                    "encounter_key": "one",
+                    "target_encounter_key": "three",
+                    "insert_after": False,
+                },
+            )
+            after = await client.post(
+                "/api/reorder",
+                json={
+                    "encounter_key": "one",
+                    "target_encounter_key": "three",
+                    "insert_after": True,
+                },
+            )
+            return before, after
+
+    before, after = asyncio.run(apply_drop_positions())
+
+    assert before.status_code == 200
+    assert [entry["encounter_key"] for entry in before.json()["rooms"]["1"]["waiting"]] == [
+        "two",
+        "one",
+        "three",
+    ]
+    assert after.status_code == 200
+    assert [entry["encounter_key"] for entry in after.json()["rooms"]["1"]["waiting"]] == [
+        "two",
+        "three",
+        "one",
+    ]
+    restarted = QueueStore(config.sqlite_path)
+    assert [entry["encounter_key"] for entry in restarted.get_board()["rooms"][1]["waiting"]] == [
+        "two",
+        "three",
+        "one",
+    ]
+
+
+def test_drag_reorder_api_rejects_target_from_another_session(tmp_path):
+    config, _ = ready_store(tmp_path)
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("one", "DOC1", patient_no="100001"),
+            snapshot("two", "DOC1", patient_no="100002"),
+            snapshot("three", "DOC1", patient_no="100003"),
+            snapshot("noon", "DOC1", patient_no="100004", time_kind="2"),
+        ],
+        config.doctor_room_map,
+    )
+
+    async def drop_across_sessions():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/reorder",
+                json={
+                    "encounter_key": "one",
+                    "target_encounter_key": "noon",
+                    "insert_after": False,
+                },
+            )
+
+    response = asyncio.run(drop_across_sessions())
+
+    assert response.status_code == 400
+
+
+def test_waiting_cards_are_keyboard_focusable(tmp_path):
+    config, _ = ready_store(tmp_path)
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [snapshot("one", "DOC1", patient_no="100001")],
+        config.doctor_room_map,
+    )
+
+    async def get_board():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.get("/")
+
+    response = asyncio.run(get_board())
+
+    assert response.status_code == 200
+    card = response.text.split('data-encounter-key="one"', maxsplit=1)[1].split(">", maxsplit=1)[0]
+    assert 'tabindex="0"' in card
+
+
+def test_reorder_api_rejects_preregistered_encounters(tmp_path):
+    config, _ = ready_store(tmp_path)
+    app = create_app(config)
+    app.state.queue_store.reconcile(
+        [
+            snapshot("waiting", "DOC1", patient_no="100001"),
+            snapshot(
+                "preregistered",
+                "DOC1",
+                presence=PresenceState.AWAY,
+                state=HISState.PREREGISTERED,
+                patient_no="100002",
+            ),
+        ],
+        config.doctor_room_map,
+    )
+    async def reorder_preregistered():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/reorder",
+                json={"encounter_key": "preregistered", "position": 1},
+            )
+
+    response = asyncio.run(reorder_preregistered())
+
+    assert response.status_code == 400
+
+
 def test_browser_action_api_keeps_local_controls_without_calling_actions(tmp_path):
     config, _ = ready_store(tmp_path)
     app = create_app(config)
@@ -174,6 +493,8 @@ def test_browser_action_api_keeps_local_controls_without_calling_actions(tmp_pat
 
     assert page.status_code == 200
     assert 'data-action="away"' in page.text
+    assert "暫離" in page.text
+    assert "暫未到診" not in page.text
     assert 'data-action="up"' in page.text
     assert "下一位" not in page.text
     assert "叫號" not in page.text
@@ -355,7 +676,7 @@ def test_old_room_order_migrates_into_contiguous_session_orders(tmp_path):
 
     migrated = QueueStore(database_path)
     morning = migrated.get_board(1)["rooms"][1]["waiting"]
-    morning_away = migrated.get_board(1)["rooms"][1]["away"]
+    morning_preregistered = migrated.get_board(1)["rooms"][1]["preregistered"]
     noon = migrated.get_board(2)["rooms"][1]["waiting"]
 
     assert [entry["encounter_key"] for entry in morning] == ["morning-one", "morning-two"]
@@ -363,8 +684,9 @@ def test_old_room_order_migrates_into_contiguous_session_orders(tmp_path):
     assert [entry["encounter_key"] for entry in noon] == ["noon-one", "noon-two"]
     assert [entry["queue_position"] for entry in noon] == [1, 2]
     assert all(entry["queue_status"] == "WAITING" for entry in morning + noon)
-    assert morning_away[0]["encounter_key"] == "morning-preregistered"
-    assert morning_away[0]["queue_status"] == "PREREGISTERED"
+    assert morning_preregistered[0]["encounter_key"] == "morning-preregistered"
+    assert morning_preregistered[0]["queue_status"] == "PREREGISTERED"
+    assert morning_preregistered[0]["queue_position"] is None
     with sqlite3.connect(database_path) as connection:
         migrated_sessions = dict(
             connection.execute("SELECT encounter_key, time_kind FROM encounter_state")

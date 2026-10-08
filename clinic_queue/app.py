@@ -39,7 +39,9 @@ class QueueAction(BaseModel):
 
 class QueueReorder(BaseModel):
     encounter_key: str
-    position: int
+    position: int | None = None
+    target_encounter_key: str | None = None
+    insert_after: bool | None = None
 
 
 def create_app(config: AppConfig) -> FastAPI:
@@ -102,10 +104,10 @@ def create_app(config: AppConfig) -> FastAPI:
         unconfirmed_count = sum(
             len(board["unconfirmed"]["rooms"][room_id][status])
             for room_id in visible_room_ids
-            for status in ("waiting", "away")
+            for status in ("waiting", "away", "preregistered")
         ) + sum(
             len(board["unconfirmed"]["unmatched"][status])
-            for status in ("waiting", "away", "completed")
+            for status in ("waiting", "away", "preregistered", "completed")
         ) + len(unconfirmed_completed_encounters)
         return templates.TemplateResponse(
             request=request,
@@ -179,7 +181,18 @@ def create_app(config: AppConfig) -> FastAPI:
     @application.post("/api/reorder")
     async def reorder_queue(reorder: QueueReorder, request: Request) -> dict:
         try:
-            application.state.queue_store.reorder(reorder.encounter_key, reorder.position)
+            if reorder.target_encounter_key is not None:
+                if reorder.position is not None or reorder.insert_after is None:
+                    raise QueueError("A relative reorder requires only a target and insert_after value.")
+                application.state.queue_store.reorder_relative(
+                    reorder.encounter_key,
+                    reorder.target_encounter_key,
+                    reorder.insert_after,
+                )
+            else:
+                if reorder.position is None or reorder.insert_after is not None:
+                    raise QueueError("A reorder requires a final position or a target insertion position.")
+                application.state.queue_store.reorder(reorder.encounter_key, reorder.position)
             return application.state.queue_store.get_board(_selected_time_kind(request))
         except QueueError as exc:
             status_code = 404 if "not found" in str(exc).lower() else 400

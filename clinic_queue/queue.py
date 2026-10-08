@@ -251,7 +251,7 @@ class QueueStore:
                 mapped_room is not None
                 and time_kind is not None
                 and row["presence_status"] == PresenceState.PRESENT.value
-                and row["queue_status"] not in ("COMPLETED", "INVALIDATED")
+                and row["queue_status"] == "WAITING"
             )
             if not is_waiting_candidate:
                 position = None
@@ -289,7 +289,7 @@ class QueueStore:
             )
             position = row["queue_position"]
             if (
-                queue_status in ("COMPLETED", "INVALIDATED")
+                queue_status != "WAITING"
                 or row["room_id"] is None
                 or presence == PresenceState.AWAY.value
                 or time_kind is None
@@ -322,7 +322,7 @@ class QueueStore:
             SELECT COALESCE(MAX(queue_position), 0) + 1
             FROM encounter_state
             WHERE room_id = ? AND time_kind = ? AND presence_status = 'PRESENT'
-              AND queue_status NOT IN ('COMPLETED', 'INVALIDATED')
+              AND queue_status = 'WAITING'
             """,
             (scope.room_id, int(scope.time_kind)),
         ).fetchone()
@@ -338,7 +338,7 @@ class QueueStore:
             """
             SELECT encounter_key, queue_position FROM encounter_state
             WHERE room_id = ? AND time_kind = ? AND presence_status = 'PRESENT'
-              AND queue_status NOT IN ('COMPLETED', 'INVALIDATED')
+              AND queue_status = 'WAITING'
             ORDER BY CASE WHEN queue_position IS NULL THEN 1 ELSE 0 END,
                      queue_position, created_at, encounter_key
             """,
@@ -451,7 +451,12 @@ class QueueStore:
                     same_group = same_room and existing["time_kind"] == (
                         None if time_kind is None else int(time_kind)
                     )
-                    if room_id is None or time_kind is None or presence is PresenceState.AWAY:
+                    if (
+                        room_id is None
+                        or time_kind is None
+                        or presence is PresenceState.AWAY
+                        or encounter.his_state is not HISState.WAITING
+                    ):
                         position = None
                     elif same_group and old_position is not None:
                         position = int(old_position)
@@ -465,7 +470,7 @@ class QueueStore:
                     reordered_at = existing["manually_reordered_at"]
 
                 queue_status = _queue_status(encounter.his_state)
-                if queue_status in ("COMPLETED", "INVALIDATED"):
+                if queue_status != "WAITING":
                     position = None
 
                 connection.execute(
@@ -578,9 +583,10 @@ class QueueStore:
             row["room_id"] is None
             or row["time_kind"] is None
             or row["presence_status"] != PresenceState.PRESENT.value
+            or row["queue_status"] != "WAITING"
         ):
             raise QueueError(
-                "Only present encounters matched to a room with a known clinic session can be reordered."
+                "Only waiting encounters matched to a room with a known clinic session can be reordered."
             )
         return QueueScope(int(row["room_id"]), ClinicSession(int(row["time_kind"])))
 
@@ -614,6 +620,12 @@ class QueueStore:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_active_row(connection, encounter_key)
+            if row["queue_status"] != "WAITING":
+                raise QueueError("Presence can only be changed for waiting encounters.")
+            if row["time_kind"] is None:
+                raise QueueError(
+                    "Presence can only be changed for encounters with a known clinic session."
+                )
             old_presence = str(row["presence_status"])
             room_id = row["room_id"]
             time_kind = row["time_kind"]
@@ -678,7 +690,7 @@ class QueueStore:
             """
             SELECT encounter_key FROM encounter_state
             WHERE room_id = ? AND time_kind = ? AND presence_status = 'PRESENT'
-              AND queue_status NOT IN ('COMPLETED', 'INVALIDATED')
+              AND queue_status = 'WAITING'
             ORDER BY queue_position, created_at, encounter_key
             """,
             (scope.room_id, int(scope.time_kind)),
@@ -738,9 +750,35 @@ class QueueStore:
         return self._row_to_dict(updated)
 
     def reorder(self, encounter_key: str, position: int) -> dict[str, Any]:
-        """Move an encounter to a one-based room position (drag/drop target)."""
+        """Move an encounter to an exact one-based final position in its queue."""
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            return self._reorder_in_transaction(connection, encounter_key, position, self._now())
+
+    def reorder_relative(
+        self,
+        encounter_key: str,
+        target_encounter_key: str,
+        insert_after: bool,
+    ) -> dict[str, Any]:
+        """Place a waiting encounter before or after another in its room/session queue."""
+        if type(insert_after) is not bool:
+            raise QueueError("insert_after must be true or false.")
+        if encounter_key == target_encounter_key:
+            raise QueueError("An encounter cannot be reordered relative to itself.")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            source = self._require_active_row(connection, encounter_key)
+            scope = self._require_reorder_scope(source)
+            target = self._require_active_row(connection, target_encounter_key)
+            target_scope = self._require_reorder_scope(target)
+            if target_scope != scope:
+                raise QueueError("Encounters can only be reordered within the same room and clinic session.")
+            keys = self._ordered_room_keys(connection, scope)
+            if encounter_key not in keys or target_encounter_key not in keys:
+                raise QueueError("Only waiting encounters can be reordered.")
+            keys.remove(encounter_key)
+            position = keys.index(target_encounter_key) + 1 + int(insert_after)
             return self._reorder_in_transaction(connection, encounter_key, position, self._now())
 
     def _move(self, encounter_key: str, delta: int) -> dict[str, Any]:
@@ -815,12 +853,18 @@ class QueueStore:
 
         def empty_rooms() -> dict[int, dict[str, list[dict[str, Any]]]]:
             return {
-                1: {"waiting": [], "away": []},
-                2: {"waiting": [], "away": []},
+                1: {"waiting": [], "away": [], "preregistered": []},
+                2: {"waiting": [], "away": [], "preregistered": []},
             }
 
         def empty_unmatched() -> dict[str, list[dict[str, Any]]]:
-            return {"waiting": [], "away": [], "completed": [], "invalidated": []}
+            return {
+                "waiting": [],
+                "away": [],
+                "preregistered": [],
+                "completed": [],
+                "invalidated": [],
+            }
 
         board: dict[str, Any] = {
             "selected_time_kind": None if selected_session is None else int(selected_session),
@@ -859,6 +903,11 @@ class QueueStore:
                 (destination or group)["completed"].append(entry)
             elif entry["queue_status"] == "INVALIDATED":
                 (destination or group)["invalidated"].append(entry)
+            elif entry["queue_status"] == "PREREGISTERED":
+                if destination is not None:
+                    destination["preregistered"].append(entry)
+                else:
+                    group["rooms"][entry["room_id"]]["preregistered"].append(entry)
             elif destination is not None:
                 status = (
                     "away"

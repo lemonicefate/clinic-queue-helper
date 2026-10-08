@@ -25,11 +25,23 @@ A visit whose `TIME_KIND` is missing or does not identify one of the three defin
 **候診序列**:
 The ordered set of encounters waiting in one consultation room during one clinic session.
 
+**候診中**:
+An active encounter that HIS classifies as waiting. `TREAT=C` remains outside this list; other active, non-completed HIS states enter it through synchronization.
+
 **就診狀態**:
-The currently distinguishable visit states are 候診, 完成, and 未報到; the available HIS data does not identify a separate 已叫號 or 看診中 state.
+The HIS-derived visit states are 候診, 完成, and 已約未到. They are separate from local presence; the available HIS data does not identify a separate 已叫號 or 看診中 state.
 
 **暫存 HIS 紀錄**:
 A record indicated by `TREAT=B` or `OVER=F`; it is not evidence that the patient has entered consultation.
 
-**未報到**:
-A preregistered visit that has not been checked in, indicated by `TREAT=C` unless a completion condition applies.
+**已約未到**:
+A preregistered visit indicated by `TREAT=C` unless a completion condition applies. It enters 候診中 only when HIS synchronization changes it to another active, non-completed state.
+
+**已掛暫離**:
+A waiting encounter that clinic staff manually mark as temporarily away. This local presence state is not represented in HIS and is distinct from 已約未到.
+
+**回候診**:
+The front desk action that returns an 已掛暫離 encounter to 候診中 at the tail of the same room-and-session sequence.
+
+**暫未到診**:
+Avoid as a list category because it combines 已約未到 and 已掛暫離, which have different sources and transitions.

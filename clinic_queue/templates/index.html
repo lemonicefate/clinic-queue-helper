@@ -5,61 +5,166 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title }}</title>
     <style>
-      :root { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; color: #183044; background: #f3f7fa; }
-      body { margin: 0; }
-      main { max-width: 1500px; margin: 0 auto; padding: 1.5rem; }
-      h1 { margin: 0; font-size: 2rem; }
-      .intro { margin: .35rem 0 1.25rem; color: #536b7c; }
-      .sync { padding: .75rem 1rem; border-radius: .5rem; background: #e1f4eb; color: #195c3b; }
-      .sync[role="alert"] { background: #fff0d5; color: #704900; }
-      .columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
-      .columns.single-room { grid-template-columns: minmax(0, 1fr); max-width: 800px; }
-      .room, .unmatched, .unconfirmed { background: white; border: 1px solid #d8e3eb; border-radius: .75rem; padding: 1rem; box-shadow: 0 2px 8px #1830440b; }
-      .room h2, .unmatched h2 { margin: 0 0 .85rem; }
-      h3 { margin: 1rem 0 .5rem; font-size: 1rem; color: #536b7c; }
-      .patient { padding: .75rem; margin: .5rem 0; border: 1px solid #e1e9ef; border-radius: .5rem; }
-      .new-patient { background: #fffbed; border-color: #e8c45b; }
-      .waiting-patient { cursor: grab; }
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", "Microsoft JhengHei", sans-serif;
+        color: #1d3338;
+        background: #eef3f3;
+        font-synthesis: none;
+        text-rendering: optimizeLegibility;
+        --ink: #1d3338;
+        --muted: #526b70;
+        --line: #d6e1e2;
+        --surface: #fff;
+        --canvas: #eef3f3;
+        --accent: #12675c;
+        --accent-deep: #0c5149;
+        --accent-soft: #e2f1ed;
+        --warning-ink: #70490b;
+        --warning-surface: #fff4d7;
+        --error-ink: #8a352a;
+        --error-surface: #fff0ed;
+      }
+      * { box-sizing: border-box; }
+      body { min-width: 320px; margin: 0; background: var(--canvas); color: var(--ink); }
+      main { width: min(100%, 1560px); margin: 0 auto; padding: 1.75rem 2rem 4rem; }
+      h1, h2, h3, p { margin-top: 0; }
+      h1 { margin-bottom: .3rem; font-size: 1.8rem; line-height: 1.2; letter-spacing: -.025em; }
+      h2 { font-size: 1.2rem; line-height: 1.3; }
+      h3 { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin: 1.35rem 0 .45rem; color: #345159; font-size: .95rem; font-weight: 650; }
+      .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1.35rem; }
+      .intro { margin: 0; color: var(--muted); font-size: .95rem; }
+      .sync { display: inline-flex; align-items: center; gap: .5rem; flex: 0 0 auto; margin: .1rem 0 0; padding: .55rem .8rem; border: 1px solid #c7e1d9; border-radius: 999px; background: #e9f5f0; color: #205b4c; font-size: .875rem; font-weight: 600; }
+      .sync::before { width: .5rem; height: .5rem; border-radius: 50%; background: #248264; content: ""; }
+      .sync[role="alert"] { border-color: #ecd39a; background: var(--warning-surface); color: var(--warning-ink); }
+      .sync[role="alert"]::before { background: #a56b10; }
+      .sync.storage-error { width: 100%; margin: 0 0 1rem; border-radius: .65rem; }
+      .board-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; padding: .65rem; border: 1px solid var(--line); border-radius: .9rem; background: var(--surface); }
+      .view-switcher { display: flex; flex-wrap: wrap; gap: .35rem; }
+      .view-switcher a { display: inline-flex; min-height: 2.75rem; align-items: center; justify-content: center; padding: .45rem .95rem; border-radius: .65rem; color: #405c62; font-size: .925rem; font-weight: 600; text-decoration: none; }
+      .view-switcher a:hover { background: #f0f6f5; color: var(--accent-deep); }
+      .view-switcher a.is-active { background: var(--accent-soft); color: var(--accent-deep); }
+      .session-picker { display: flex; align-items: center; gap: .65rem; padding: 0 .25rem; }
+      .session-picker label { color: var(--muted); font-size: .875rem; font-weight: 600; white-space: nowrap; }
+      select, input, button { font: inherit; }
+      select { min-height: 2.75rem; padding: .4rem 2rem .4rem .75rem; border: 1px solid #b8cbce; border-radius: .55rem; background: var(--surface); color: var(--ink); }
+      .columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; align-items: start; }
+      .columns.single-room { grid-template-columns: minmax(0, 1fr); max-width: 920px; }
+      .room, .unmatched, .unconfirmed, .completed-section { border: 1px solid var(--line); border-radius: .9rem; background: var(--surface); }
+      .room { min-width: 0; padding: 1.25rem; }
+      .room-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: 1rem; }
+      .room-heading h2 { margin: 0; }
+      .room-totals { display: flex; flex-wrap: wrap; gap: .4rem; }
+      .room-total { padding: .25rem .55rem; border-radius: 999px; background: #f0f5f5; color: #405e63; font-size: .78rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .room-total strong { margin-right: .15rem; color: var(--ink); }
+      .room-code-field { display: grid; gap: .35rem; margin: 0 0 1.1rem; padding: .9rem; border: 1px solid #e0e8e8; border-radius: .7rem; background: #f7f9f9; }
+      .room-code-field label { font-size: .875rem; font-weight: 650; }
+      .room-code-field input { width: 100%; min-height: 2.75rem; padding: .5rem .7rem; border: 1px solid #aebfc1; border-radius: .5rem; background: var(--surface); color: var(--ink); }
+      .room-code-field input:disabled { background: #edf2f2; color: var(--muted); }
+      .room-code-hint, .field-error, .field-state { font-size: .8rem; line-height: 1.45; }
+      .room-code-hint, .field-state { color: var(--muted); }
+      .field-error { color: var(--error-ink); }
+      .room-code-field [aria-invalid="true"] { border-color: #b54839; }
+      .section-count { min-width: 1.55rem; padding: .08rem .38rem; border-radius: 999px; background: #edf3f3; color: #466168; font-size: .78rem; font-variant-numeric: tabular-nums; text-align: center; }
+      .patient { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .65rem 1rem; margin: .45rem 0; padding: .8rem .85rem; border: 1px solid #e0e8e8; border-radius: .7rem; background: var(--surface); }
+      .patient:hover { border-color: #c5d6d6; }
+      .patient.new-patient { border-color: #e7c66b; background: #fff9e9; }
+      .waiting-patient { position: relative; cursor: grab; }
       .waiting-patient:active { cursor: grabbing; }
-      .patient strong { font-size: 1.15rem; }
-      .secondary { display: block; margin-top: .3rem; color: #536b7c; font-size: .9rem; }
-      .badge { display: inline-block; margin-left: .35rem; padding: .1rem .45rem; border-radius: 1rem; background: #e8f0f6; font-size: .8rem; }
-      .badge.away { background: #fff0d5; }
-      .session-picker { margin: 1rem 0; }
-      .room-code-field { display: grid; gap: .3rem; max-width: 26rem; margin-bottom: 1rem; }
-      .room-code-field input { min-height: 2.25rem; padding: .35rem .55rem; border: 1px solid #a9bfcd; border-radius: .35rem; font: inherit; }
-      .room-code-hint, .field-error { font-size: .85rem; }
-      .room-code-hint { color: #536b7c; }
-      .field-error { color: #9a3412; }
-      .queue-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .7rem; }
-      button { min-height: 2.5rem; padding: .4rem .75rem; border: 1px solid #87a9be; border-radius: .4rem; color: #183044; background: #f7fbfd; cursor: pointer; }
-      button:hover { background: #e8f3f9; }
-      .empty { color: #788d9c; }
-      @media (max-width: 800px) { .columns { grid-template-columns: 1fr; } main { padding: 1rem; } }
+      .waiting-patient.drop-before::before,
+      .waiting-patient.drop-after::after {
+        position: absolute;
+        right: .25rem;
+        left: .25rem;
+        height: 3px;
+        border-radius: 999px;
+        background: var(--accent);
+        content: "";
+        pointer-events: none;
+      }
+      .waiting-patient.drop-before::before { top: -.27rem; }
+      .waiting-patient.drop-after::after { bottom: -.27rem; }
+      .patient-main { min-width: 0; }
+      .patient-identity { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem .55rem; }
+      .patient strong { font-size: 1.04rem; font-variant-numeric: tabular-nums; }
+      .patient-badges { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem; }
+      .secondary { display: block; margin-top: .3rem; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+      .badge { display: inline-flex; align-items: center; min-height: 1.4rem; padding: .08rem .45rem; border-radius: 999px; background: #edf3f3; color: #405a60; font-size: .75rem; font-weight: 600; white-space: nowrap; }
+      .badge-new { background: #ffedbb; color: #664907; }
+      .badge-overdue { background: var(--error-surface); color: var(--error-ink); }
+      .queue-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .35rem; }
+      button { min-height: 2.55rem; padding: .45rem .7rem; border: 1px solid #bdcecf; border-radius: .5rem; background: var(--surface); color: #29464c; cursor: pointer; font-size: .82rem; font-weight: 600; }
+      button:hover:not(:disabled) { border-color: #91b5ae; background: #f0f7f5; color: var(--accent-deep); }
+      button:active:not(:disabled) { background: #e4f0ed; }
+      button:disabled { border-color: #d6e1e2; background: #edf2f2; color: #526b70; cursor: wait; }
+      .registration-details { grid-column: 1 / -1; border-top: 1px solid #e8eeee; padding-top: .5rem; color: var(--muted); font-size: .82rem; }
+      .registration-details summary { width: fit-content; cursor: pointer; color: #426067; font-weight: 600; text-underline-offset: .2em; }
+      .registration-details[open] summary { margin-bottom: .3rem; }
+      .unmatched, .unconfirmed, .completed-section { margin-top: 1.1rem; padding: 1.1rem 1.25rem; }
+      .unmatched h2 { margin: 0; }
+      .section-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+      .empty { margin: .35rem 0 .65rem; color: var(--muted); font-size: .875rem; }
+      .unconfirmed summary, .completed-section summary { cursor: pointer; color: #2d4b51; font-weight: 700; }
+      .unconfirmed > summary, .completed-section > summary { min-height: 2rem; }
+      .action-error { margin: 0 0 1rem; padding: .75rem .9rem; border: 1px solid #ecc5bf; border-radius: .65rem; background: var(--error-surface); color: var(--error-ink); }
+      :focus-visible { outline: 3px solid #188b83; outline-offset: 2px; }
+      ::selection { background: #c8e8df; color: #163f39; }
+      @media (max-width: 900px) {
+        main { padding: 1.25rem 1.25rem 3rem; }
+        .columns { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 600px) {
+        main { padding: 1rem .75rem 2.5rem; }
+        .page-header { flex-direction: column; gap: .75rem; }
+        .board-toolbar { align-items: stretch; flex-direction: column; gap: .5rem; padding: .55rem; }
+        .view-switcher { display: grid; width: 100%; min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .view-switcher a { min-width: 0; padding: .4rem .25rem; font-size: .85rem; }
+        .session-picker { justify-content: space-between; padding: .25rem .2rem .1rem; }
+        .session-picker select { flex: 1; }
+        .room { padding: 1rem .8rem; }
+        .room-heading { align-items: flex-start; flex-direction: column; }
+        .patient { grid-template-columns: minmax(0, 1fr); gap: .65rem; padding: .8rem .7rem; }
+        .queue-actions { width: 100%; grid-column: 1; justify-content: flex-start; }
+        .queue-actions button { min-width: 0; flex: 1 1 calc(50% - .25rem); }
+        .registration-details { grid-column: 1; }
+        .unmatched, .unconfirmed, .completed-section { padding: .9rem .8rem; }
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        a, button, .patient { transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
+      }
     </style>
   </head>
   <body>
     <main>
-      <h1>{{ title }}</h1>
-      <p class="intro">診所候診隊列</p>
-      {% if his_stale %}
-        <p class="sync" role="alert">HIS 資料暫時無法同步</p>
-      {% else %}
-        <p class="sync" role="status">HIS 資料已同步</p>
-      {% endif %}
+      <header class="page-header">
+        <div>
+          <h1>{{ title }}</h1>
+          <p class="intro">診所候診隊列</p>
+        </div>
+        {% if his_stale %}
+          <p class="sync" role="alert">HIS 資料暫時無法同步</p>
+        {% else %}
+          <p class="sync" role="status">HIS 資料已同步</p>
+        {% endif %}
+      </header>
       {% if storage_error %}
-        <p class="sync" role="alert">本機佇列儲存暫時無法使用，請查看本機應用程式記錄。</p>
+        <p class="sync storage-error" role="alert">本機佇列儲存暫時無法使用，請查看本機應用程式記錄。</p>
       {% endif %}
-      <nav aria-label="診間檢視">
-        <a href="/">兩間診間</a> · <a href="/?room=1">一診</a> · <a href="/?room=2">二診</a>
-      </nav>
-      <div class="session-picker">
-        <label for="clinic-session">門診時段</label>
-        <select id="clinic-session" aria-label="門診時段">
-          <option value="1"{% if selected_time_kind == 1 %} selected{% endif %}>早診</option>
-          <option value="2"{% if selected_time_kind == 2 %} selected{% endif %}>午診</option>
-          <option value="3"{% if selected_time_kind == 3 %} selected{% endif %}>晚診</option>
-        </select>
+      <p class="action-error" data-action-error role="alert" hidden></p>
+      <div class="board-toolbar">
+        <nav class="view-switcher" aria-label="診間檢視">
+          <a href="/" class="{% if selected_room is none %}is-active{% endif %}"{% if selected_room is none %} aria-current="page"{% endif %}>兩間診間</a>
+          <a href="/?room=1" class="{% if selected_room == 1 %}is-active{% endif %}"{% if selected_room == 1 %} aria-current="page"{% endif %}>一診</a>
+          <a href="/?room=2" class="{% if selected_room == 2 %}is-active{% endif %}"{% if selected_room == 2 %} aria-current="page"{% endif %}>二診</a>
+        </nav>
+        <div class="session-picker">
+          <label for="clinic-session">門診時段</label>
+          <select id="clinic-session" aria-label="門診時段">
+            <option value="1"{% if selected_time_kind == 1 %} selected{% endif %}>早診</option>
+            <option value="2"{% if selected_time_kind == 2 %} selected{% endif %}>午診</option>
+            <option value="3"{% if selected_time_kind == 3 %} selected{% endif %}>晚診</option>
+          </select>
+        </div>
       </div>
 
       {% macro room_label(room_id) -%}{{ '一診' if room_id == 1 else '二診' }}{%- endmacro %}
@@ -67,22 +172,25 @@
       {% macro patient_card(encounter, order=none, read_only=false) %}
         <article class="patient{% if encounter.is_new %} new-patient{% endif %}{% if order is not none %} waiting-patient{% endif %}"
                  data-encounter-key="{{ encounter.encounter_key }}"
-                 {% if order is not none %}draggable="true" data-room-id="{{ encounter.room_id }}" data-time-kind="{{ encounter.time_kind }}" data-position="{{ order }}"{% endif %}>
-          <strong>{% if order is not none %}{{ order }}. {% endif %}#{{ encounter.queue_number }} {{ encounter.patient_name }}</strong>
-          {% if encounter.is_new %}<span class="badge">NEW</span>{% endif %}
-          {% if encounter.overdue %}<span class="badge">過號</span>{% endif %}
-          {% if encounter.presence_status == 'AWAY' %}<span class="badge away">暫未到診</span>{% endif %}
-          {% if encounter.time_kind is none %}<span class="badge">診別未確認</span>{% endif %}
-          {% if encounter.queue_status == 'WAITING' %}<span class="badge">候診</span>{% endif %}
-          {% if encounter.queue_status == 'PREREGISTERED' %}<span class="badge">未報到</span>{% endif %}
-          {% if encounter.queue_status == 'COMPLETED' %}<span class="badge">完成</span>{% endif %}
-          <span class="secondary">病歷號 {{ encounter.patient_no }}</span>
-          {% if not read_only and encounter.queue_status not in ('COMPLETED', 'INVALIDATED') %}
+                 {% if order is not none %}tabindex="0" draggable="true" data-room-id="{{ encounter.room_id }}" data-time-kind="{{ encounter.time_kind }}" data-position="{{ order }}"{% endif %}>
+          <div class="patient-main">
+            <div class="patient-identity">
+              <strong>{% if order is not none %}{{ order }}. {% endif %}#{{ encounter.queue_number }} {{ encounter.patient_name }}</strong>
+              <div class="patient-badges">
+                {% if encounter.is_new %}<span class="badge badge-new">NEW</span>{% endif %}
+                {% if encounter.overdue %}<span class="badge badge-overdue">過號</span>{% endif %}
+              </div>
+            </div>
+            <span class="secondary">病歷號 {{ encounter.patient_no }}</span>
+          </div>
+          {% if not read_only and encounter.queue_status == 'WAITING' %}
             <div class="queue-actions" aria-label="候診操作">
-              {% if encounter.presence_status == 'AWAY' %}
-                <button type="button" data-action="present" data-encounter-key="{{ encounter.encounter_key }}">已到診</button>
-              {% else %}
-                <button type="button" data-action="away" data-encounter-key="{{ encounter.encounter_key }}">暫未到診</button>
+              {% if encounter.time_kind is not none %}
+                {% if encounter.presence_status == 'AWAY' %}
+                  <button type="button" data-action="present" data-encounter-key="{{ encounter.encounter_key }}">回候診</button>
+                {% else %}
+                  <button type="button" data-action="away" data-encounter-key="{{ encounter.encounter_key }}">暫離</button>
+                {% endif %}
               {% endif %}
               {% if encounter.room_id and encounter.presence_status == 'PRESENT' %}
                 {% if encounter.time_kind is not none %}
@@ -106,47 +214,68 @@
       <div class="columns{% if selected_room %} single-room{% endif %}">
         {% for room_id in selected_rooms %}
           <section class="room" aria-label="{{ room_label(room_id) }}" data-room-column="{{ room_id }}">
-            <h2>{{ room_label(room_id) }}</h2>
+            <header class="room-heading">
+              <h2>{{ room_label(room_id) }}</h2>
+              <div class="room-totals" aria-label="{{ room_label(room_id) }}人數">
+                <span class="room-total"><strong>{{ board.rooms[room_id].waiting | length }}</strong>候診</span>
+                <span class="room-total"><strong>{{ board.rooms[room_id].away | length }}</strong>已掛暫離</span>
+                <span class="room-total"><strong>{{ board.rooms[room_id].preregistered | length }}</strong>已約未到</span>
+              </div>
+            </header>
             <div class="room-code-field">
-              <label for="room-doctor-code-{{ room_id }}">醫師帳號（CCDOC）</label>
+              <label for="room-doctor-code-{{ room_id }}">醫師代碼（CCDOC）</label>
               <input id="room-doctor-code-{{ room_id }}" type="text" autocomplete="off"
+                     aria-describedby="room-doctor-hint-{{ room_id }} room-doctor-save-{{ room_id }} room-doctor-error-{{ room_id }}"
                      data-room-doctor-code="{{ room_id }}"
                      value="{{ board.room_doctor_codes[room_id] }}">
-              <span class="room-code-hint">離開欄位時自動儲存，設定會套用至所有工作站。</span>
-              <span class="field-error" data-room-doctor-error="{{ room_id }}" role="status"></span>
+              <span class="room-code-hint" id="room-doctor-hint-{{ room_id }}">離開欄位時自動儲存，設定會套用至所有工作站。</span>
+              <span class="field-state" id="room-doctor-save-{{ room_id }}" data-room-doctor-save-state="{{ room_id }}" role="status" aria-live="polite"></span>
+              <span class="field-error" id="room-doctor-error-{{ room_id }}" data-room-doctor-error="{{ room_id }}" role="alert"></span>
             </div>
             {% if not board.room_doctor_codes[room_id] %}
               <p class="empty">本診間目前無診次</p>
             {% endif %}
-            <h3>候診中</h3>
+            <h3><span>候診中</span><span class="section-count">{{ board.rooms[room_id].waiting | length }}</span></h3>
             {% for encounter in board.rooms[room_id].waiting %}
               {{ patient_card(encounter, encounter.queue_position) }}
             {% else %}
               <p class="empty">目前沒有候診病人</p>
             {% endfor %}
-            <h3>暫未到診</h3>
+            <h3><span>已掛暫離</span><span class="section-count">{{ board.rooms[room_id].away | length }}</span></h3>
             {% for encounter in board.rooms[room_id].away %}
               {{ patient_card(encounter) }}
             {% else %}
-              <p class="empty">目前沒有暫未到診病人</p>
+              <p class="empty">目前沒有已掛暫離病人</p>
+            {% endfor %}
+            <h3><span>已約未到</span><span class="section-count">{{ board.rooms[room_id].preregistered | length }}</span></h3>
+            {% for encounter in board.rooms[room_id].preregistered %}
+              {{ patient_card(encounter) }}
+            {% else %}
+              <p class="empty">目前沒有已約未到病人</p>
             {% endfor %}
           </section>
         {% endfor %}
       </div>
 
       <section class="unmatched" aria-label="未納入一診／二診篩選">
-        <h2>未納入一診／二診篩選</h2>
+        <div class="section-heading"><h2>未納入一診／二診篩選</h2></div>
         <h3>候診</h3>
         {% for encounter in board.unmatched.waiting %}
           {{ patient_card(encounter, read_only=true) }}
         {% else %}
           <p class="empty">目前沒有未納入篩選的候診掛號</p>
         {% endfor %}
-        <h3>暫未到診</h3>
+        <h3>已掛暫離</h3>
         {% for encounter in board.unmatched.away %}
           {{ patient_card(encounter, read_only=true) }}
         {% else %}
-          <p class="empty">目前沒有未納入篩選的暫未到診掛號</p>
+          <p class="empty">目前沒有未納入篩選的已掛暫離掛號</p>
+        {% endfor %}
+        <h3>已約未到</h3>
+        {% for encounter in board.unmatched.preregistered %}
+          {{ patient_card(encounter, read_only=true) }}
+        {% else %}
+          <p class="empty">目前沒有未納入篩選的已約未到掛號</p>
         {% endfor %}
         <h3>已完成</h3>
         {% for encounter in board.unmatched.completed %}
@@ -165,11 +294,17 @@
           {% else %}
             <p class="empty">目前沒有診別未確認的候診病人</p>
           {% endfor %}
-          <h3>{{ room_label(room_id) }} · 暫未到診</h3>
+          <h3>{{ room_label(room_id) }} · 已掛暫離</h3>
           {% for encounter in board.unconfirmed.rooms[room_id].away %}
             {{ patient_card(encounter) }}
           {% else %}
-            <p class="empty">目前沒有診別未確認的暫未到診病人</p>
+            <p class="empty">目前沒有診別未確認的已掛暫離病人</p>
+          {% endfor %}
+          <h3>{{ room_label(room_id) }} · 已約未到</h3>
+          {% for encounter in board.unconfirmed.rooms[room_id].preregistered %}
+            {{ patient_card(encounter) }}
+          {% else %}
+            <p class="empty">目前沒有診別未確認的已約未到病人</p>
           {% endfor %}
         {% endfor %}
         <h3>未納入一診／二診篩選 · 候診</h3>
@@ -178,8 +313,14 @@
         {% else %}
           <p class="empty">目前沒有此類掛號</p>
         {% endfor %}
-        <h3>未納入一診／二診篩選 · 暫未到診</h3>
+        <h3>未納入一診／二診篩選 · 已掛暫離</h3>
         {% for encounter in board.unconfirmed.unmatched.away %}
+          {{ patient_card(encounter, read_only=true) }}
+        {% else %}
+          <p class="empty">目前沒有此類掛號</p>
+        {% endfor %}
+        <h3>未納入一診／二診篩選 · 已約未到</h3>
+        {% for encounter in board.unconfirmed.unmatched.preregistered %}
           {{ patient_card(encounter, read_only=true) }}
         {% else %}
           <p class="empty">目前沒有此類掛號</p>
@@ -212,8 +353,12 @@
       let pendingRefresh = false;
       let pendingRoomCodeSaves = 0;
       let pollInProgress = false;
+      let draggedPatient = null;
+      let activeQueuePointerId = null;
+      let pendingReorderRequests = 0;
       const clinicSessionPicker = document.querySelector("#clinic-session");
       const registrationDetailsStorageKey = "clinicQueue.openRegistrationDetails.v1";
+      const reorderedFocusStorageKey = "clinicQueue.reorderedFocus.v1";
 
       function loadOpenRegistrationDetails() {
         try {
@@ -265,7 +410,7 @@
       });
 
       function maybeApplyPendingRefresh() {
-        if (!pendingRefresh || pendingRoomCodeSaves > 0) return;
+        if (!pendingRefresh || pendingRoomCodeSaves > 0 || draggedPatient || activeQueuePointerId !== null || pendingReorderRequests > 0) return;
         const active = document.activeElement;
         if (active?.matches("[data-room-doctor-code]")) return;
         if (active === clinicSessionPicker) return;
@@ -273,19 +418,149 @@
         window.location.reload();
       }
 
+      function finishQueuePointerInteraction(event) {
+        if (activeQueuePointerId === null) return;
+        if (event?.pointerId !== undefined && event.pointerId !== activeQueuePointerId) return;
+        activeQueuePointerId = null;
+        window.setTimeout(maybeApplyPendingRefresh, 0);
+      }
+
+      window.addEventListener("pointerup", finishQueuePointerInteraction);
+      window.addEventListener("pointercancel", finishQueuePointerInteraction);
+      window.addEventListener("blur", () => finishQueuePointerInteraction());
+
+      function normalizeQueueStateForComparison(value) {
+        if (Array.isArray(value)) {
+          const normalized = value.map(normalizeQueueStateForComparison);
+          if (normalized.every((item) => item && typeof item === "object" && typeof item.encounter_key === "string")) {
+            return normalized.sort((left, right) => left.encounter_key.localeCompare(right.encounter_key));
+          }
+          return normalized;
+        }
+        if (value && typeof value === "object") {
+          return Object.fromEntries(
+            Object.entries(value)
+              .filter(([key]) => !["queue_position", "manually_reordered_at", "updated_at"].includes(key))
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([key, item]) => [key, normalizeQueueStateForComparison(item)]),
+          );
+        }
+        return value;
+      }
+
+      function stableQueueState(value) {
+        if (Array.isArray(value)) return value.map(stableQueueState);
+        if (value && typeof value === "object") {
+          return Object.fromEntries(
+            Object.entries(value)
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([key, item]) => [key, stableQueueState(item)]),
+          );
+        }
+        return value;
+      }
+
+      function queueStatesEqual(left, right) {
+        return JSON.stringify(stableQueueState(left)) === JSON.stringify(stableQueueState(right));
+      }
+
+      function sameQueueContent(left, right) {
+        return JSON.stringify(normalizeQueueStateForComparison(left))
+          === JSON.stringify(normalizeQueueStateForComparison(right));
+      }
+
+      function applyWaitingOrder(queueState, roomId, timeKind) {
+        const roomColumn = document.querySelector(`.room[data-room-column="${roomId}"]`);
+        const waiting = queueState?.rooms?.[String(roomId)]?.waiting;
+        if (!roomColumn || !Array.isArray(waiting)) return false;
+
+        const cards = Array.from(roomColumn.querySelectorAll(".waiting-patient"))
+          .filter((card) => card.dataset.roomId === String(roomId) && card.dataset.timeKind === String(timeKind));
+        const orderedEncounters = waiting
+          .filter((encounter) => String(encounter.room_id) === String(roomId)
+            && String(encounter.time_kind) === String(timeKind))
+          .slice()
+          .sort((left, right) => Number(left.queue_position) - Number(right.queue_position));
+        if (cards.length !== orderedEncounters.length) return false;
+
+        const cardsByKey = new Map(cards.map((card) => [card.dataset.encounterKey, card]));
+        if (orderedEncounters.some((encounter) => !cardsByKey.has(encounter.encounter_key))) return false;
+        const labels = orderedEncounters.map((encounter) =>
+          cardsByKey.get(encounter.encounter_key).querySelector(".patient-identity > strong"));
+        if (labels.some((label) => !label)) return false;
+
+        let listBoundary = cards[0];
+        while (listBoundary && !listBoundary.matches("h3")) listBoundary = listBoundary.nextElementSibling;
+        if (!listBoundary) return false;
+
+        orderedEncounters.forEach((encounter, index) => {
+          const card = cardsByKey.get(encounter.encounter_key);
+          roomColumn.insertBefore(card, listBoundary);
+          card.dataset.position = String(index + 1);
+          const label = card.querySelector(".patient-identity > strong");
+          label.textContent = label.textContent.replace(/^\s*\d+\.\s*/, `${index + 1}. `);
+        });
+        return true;
+      }
+
       function requestPageRefresh() {
         pendingRefresh = true;
         maybeApplyPendingRefresh();
       }
 
+      function restoreReorderedFocus() {
+        try {
+          const encounterKey = sessionStorage.getItem(reorderedFocusStorageKey);
+          if (!encounterKey) return;
+          sessionStorage.removeItem(reorderedFocusStorageKey);
+          const card = Array.from(document.querySelectorAll(".waiting-patient"))
+            .find((item) => item.dataset.encounterKey === encounterKey);
+          card?.focus({ preventScroll: true });
+        } catch (_) {
+          // Focus restoration is best-effort if this browser blocks session storage.
+        }
+      }
+
+      async function submitQueueChange(path, body, focusEncounterKey = null, onSuccess = null) {
+        const previousQueueState = lastQueueState;
+        if (focusEncounterKey) {
+          try {
+            sessionStorage.setItem(reorderedFocusStorageKey, focusEncounterKey);
+          } catch (_) {
+            // The order still saves if this browser blocks session storage.
+          }
+        }
+        pendingReorderRequests += 1;
+        try {
+          const nextQueueState = await postJson(path, body);
+          if (onSuccess && previousQueueState && nextQueueState) {
+            if (!Object.prototype.hasOwnProperty.call(nextQueueState, "his_stale")) {
+              nextQueueState.his_stale = previousQueueState.his_stale;
+            }
+            if (!Object.prototype.hasOwnProperty.call(nextQueueState, "storage_error")) {
+              nextQueueState.storage_error = previousQueueState.storage_error;
+            }
+          }
+          if (onSuccess) onSuccess(nextQueueState, previousQueueState);
+          else requestPageRefresh();
+        } catch (error) {
+          showActionError(error.message);
+        } finally {
+          pendingReorderRequests -= 1;
+          maybeApplyPendingRefresh();
+        }
+      }
+
       window.setInterval(async () => {
         if (pollInProgress) return;
         pollInProgress = true;
+        const comparedQueueState = lastQueueState;
         try {
           const response = await fetch("/api/queue", { cache: "no-store" });
           if (!response.ok) return;
           const nextState = await response.json();
-          if (JSON.stringify(nextState) !== JSON.stringify(lastQueueState)) {
+          if (comparedQueueState !== lastQueueState) return;
+          if (!queueStatesEqual(nextState, lastQueueState)) {
             requestPageRefresh();
           }
         } catch (_) {
@@ -305,9 +580,23 @@
           const result = await response.json();
           throw new Error(result.detail || "操作失敗，請重新整理後再試。");
         }
+        return response.json();
+      }
+
+      const actionError = document.querySelector("[data-action-error]");
+
+      function clearActionError() {
+        actionError.textContent = "";
+        actionError.hidden = true;
+      }
+
+      function showActionError(message) {
+        actionError.textContent = message;
+        actionError.hidden = false;
       }
 
       async function runAction(button, action) {
+        clearActionError();
         button.disabled = true;
         try {
           const body = {
@@ -318,7 +607,7 @@
           await postJson("/api/action", body);
           requestPageRefresh();
         } catch (error) {
-          window.alert(error.message);
+          showActionError(error.message);
           button.disabled = false;
         }
       }
@@ -337,8 +626,15 @@
         const errorMessage = document.querySelector(
           `[data-room-doctor-error="${input.dataset.roomDoctorCode}"]`
         );
+        const saveState = document.querySelector(
+          `[data-room-doctor-save-state="${input.dataset.roomDoctorCode}"]`
+        );
         input.dataset.savedValue = input.value;
-        input.addEventListener("input", () => { errorMessage.textContent = ""; });
+        input.addEventListener("input", () => {
+          errorMessage.textContent = "";
+          saveState.textContent = "";
+          input.removeAttribute("aria-invalid");
+        });
         input.addEventListener("blur", async () => {
           const code = input.value.trim();
           const savedCode = input.dataset.savedValue;
@@ -350,6 +646,7 @@
 
           pendingRoomCodeSaves += 1;
           input.disabled = true;
+          saveState.textContent = "儲存中…";
           try {
             await postJson("/api/room-doctor-code", {
               room_id: Number(input.dataset.roomDoctorCode),
@@ -358,10 +655,14 @@
             input.value = code;
             input.dataset.savedValue = code;
             errorMessage.textContent = "";
+            input.removeAttribute("aria-invalid");
+            saveState.textContent = "已儲存";
             pendingRefresh = true;
           } catch (error) {
             input.value = savedCode;
             errorMessage.textContent = error.message;
+            input.setAttribute("aria-invalid", "true");
+            saveState.textContent = "儲存失敗";
           } finally {
             input.disabled = false;
             pendingRoomCodeSaves -= 1;
@@ -370,34 +671,99 @@
         });
       });
 
-      let draggedPatient = null;
+      function clearDropIndicators() {
+        document.querySelectorAll(".drop-before, .drop-after").forEach((card) => {
+          card.classList.remove("drop-before", "drop-after");
+        });
+      }
+
+      function canDropOn(source, target) {
+        return source !== target
+          && source.dataset.roomId === target.dataset.roomId
+          && source.dataset.timeKind === target.dataset.timeKind;
+      }
+
+      function updateDropIndicator(card, event) {
+        clearDropIndicators();
+        if (!draggedPatient || !canDropOn(draggedPatient, card)) return;
+        const bounds = card.getBoundingClientRect();
+        const insertAfter = event.clientY >= bounds.top + bounds.height / 2;
+        card.classList.add(insertAfter ? "drop-after" : "drop-before");
+      }
+
       document.querySelectorAll(".waiting-patient").forEach((card) => {
-        card.addEventListener("dragstart", () => { draggedPatient = card; });
-        card.addEventListener("dragend", () => { draggedPatient = null; });
+        card.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0 || event.isPrimary === false || activeQueuePointerId !== null) return;
+          const target = event.target;
+          if (target instanceof Element && target.closest("button, input, select, textarea, a, summary, details")) return;
+          activeQueuePointerId = event.pointerId;
+        });
+        card.addEventListener("keydown", (event) => {
+          if (event.target !== card || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+          event.preventDefault();
+          const currentPosition = Number(card.dataset.position);
+          const nextPosition = currentPosition + (event.key === "ArrowUp" ? -1 : 1);
+          const lastPosition = document.querySelectorAll(
+            `.waiting-patient[data-room-id="${card.dataset.roomId}"][data-time-kind="${card.dataset.timeKind}"]`,
+          ).length;
+          if (nextPosition < 1 || nextPosition > lastPosition) return;
+          void submitQueueChange(
+            "/api/action",
+            {
+              encounter_key: card.dataset.encounterKey,
+              action: event.key === "ArrowUp" ? "up" : "down",
+            },
+            card.dataset.encounterKey,
+          );
+        });
+        card.addEventListener("dragstart", () => {
+          draggedPatient = card;
+          clearDropIndicators();
+        });
+        card.addEventListener("dragend", () => {
+          draggedPatient = null;
+          finishQueuePointerInteraction();
+          clearDropIndicators();
+          maybeApplyPendingRefresh();
+        });
         card.addEventListener("dragover", (event) => {
-          if (!draggedPatient) return;
-          if (draggedPatient.dataset.roomId !== card.dataset.roomId) return;
-          if (draggedPatient.dataset.timeKind !== card.dataset.timeKind) return;
+          updateDropIndicator(card, event);
+          if (!draggedPatient || !canDropOn(draggedPatient, card)) return;
           event.preventDefault();
         });
         card.addEventListener("drop", async (event) => {
           event.preventDefault();
           const source = draggedPatient;
-          if (!source || source === card) return;
-          if (source.dataset.roomId !== card.dataset.roomId) return;
-          if (source.dataset.timeKind !== card.dataset.timeKind) return;
+          if (!source || !canDropOn(source, card)) return;
+          const bounds = card.getBoundingClientRect();
+          const insertAfter = event.clientY >= bounds.top + bounds.height / 2;
           draggedPatient = null;
-          try {
-            await postJson("/api/reorder", {
+          clearDropIndicators();
+          await submitQueueChange(
+            "/api/reorder",
+            {
               encounter_key: source.dataset.encounterKey,
-              position: Number(card.dataset.position),
-            });
-            requestPageRefresh();
-          } catch (error) {
-            window.alert(error.message);
-          }
+              target_encounter_key: card.dataset.encounterKey,
+              insert_after: insertAfter,
+            },
+            null,
+            (nextState, previousState) => {
+              if (pendingRoomCodeSaves > 0 || !sameQueueContent(previousState, nextState)) {
+                requestPageRefresh();
+                return;
+              }
+              if (!applyWaitingOrder(nextState, source.dataset.roomId, source.dataset.timeKind)) {
+                requestPageRefresh();
+                return;
+              }
+              lastQueueState = nextState;
+              pendingRefresh = false;
+            },
+          );
         });
       });
+
+      restoreReorderedFocus();
     </script>
   </body>
 </html>
