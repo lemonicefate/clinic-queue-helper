@@ -10,7 +10,7 @@ from typing import Callable, Iterable, Mapping
 from .config import AppConfig
 from .dbf import DBFHeader, DBFReadError, DBFReader, DBFRecord
 from .his import EncounterSnapshot, parse_his_date
-from .state import normalize_time_kind
+from .state import HISState, normalize_time_kind
 
 
 logger = logging.getLogger("clinic_queue.visit")
@@ -216,6 +216,8 @@ class VisitMonitor:
 
     def _associate(self, record: DBFRecord) -> _Association:
         visit_date = parse_his_date(record.raw_value("SDATE"))
+        if visit_date is None:
+            return _Association(None, "VISIT SDATE is missing or invalid")
         if visit_date != date.today():
             return _Association(None, "VISIT SDATE is not the current clinic date")
 
@@ -261,19 +263,26 @@ class VisitMonitor:
         if encounter is None:
             self._diagnostics[record.recno] = association.reason
             return None
+        if encounter.his_state is HISState.COMPLETED:
+            self._diagnostics[record.recno] = (
+                "associated encounter is already HIS-derived COMPLETED"
+            )
+            return None
         self._diagnostics.pop(record.recno, None)
 
         time_kind = normalize_time_kind(record.value("TIME_KIND"))
         assert time_kind is not None
+        doctor_code = record.value("CCDOC")
         return {
             "status": "UNKNOWN",
             "encounter_key": encounter.encounter_key,
             "patient_no": encounter.patient_no,
             "patient_name": encounter.patient_name,
-            "doctor_code": encounter.doctor_code,
+            "doctor_code": doctor_code,
             "time_kind": int(time_kind),
             "clinic_session": time_kind.label,
             "evidence_reason": association.reason,
+            "evidence_count": 1,
             "record_locators": [
                 {
                     "source": self.config.rg011m1_visit_filename,
@@ -313,26 +322,104 @@ class VisitMonitor:
             unmatched_candidates = []
             time_filter = normalize_time_kind(selected_time_kind)
             room_map = self._room_map()
+            candidates_by_identity: dict[tuple[str, str, int, str], dict] = {}
             for record in sorted(self._accepted_records.values(), key=lambda item: item.recno):
                 candidate = self._candidate_for_record(record)
                 if candidate is None:
                     continue
+                identity = (
+                    candidate["encounter_key"],
+                    candidate["doctor_code"],
+                    candidate["time_kind"],
+                    candidate["patient_no"],
+                )
+                existing = candidates_by_identity.get(identity)
+                if existing is None:
+                    candidates_by_identity[identity] = candidate
+                else:
+                    existing["record_locators"].extend(candidate["record_locators"])
+                    existing["evidence_count"] += candidate["evidence_count"]
+
+            candidates_by_physician_session: dict[tuple[str, int], list[dict]] = {}
+            for candidate in candidates_by_identity.values():
+                group_key = (candidate["doctor_code"], candidate["time_kind"])
+                candidates_by_physician_session.setdefault(group_key, []).append(candidate)
+
+            for group in candidates_by_physician_session.values():
+                candidate_status = "UNKNOWN" if len(group) == 1 else "AMBIGUOUS"
+                for candidate in group:
+                    candidate["status"] = candidate_status
+
+            projected_candidates = sorted(
+                candidates_by_identity.values(),
+                key=lambda candidate: (
+                    candidate["doctor_code"],
+                    candidate["time_kind"],
+                    candidate["encounter_key"],
+                    candidate["patient_no"],
+                ),
+            )
+            for candidate in projected_candidates:
+                room_id = room_map.get(candidate["doctor_code"])
+                if not candidate["doctor_code"]:
+                    placement_reason = (
+                        "CCDOC is blank; candidate remains in read-only unmatched diagnostics"
+                    )
+                else:
+                    placement_reason = (
+                        f"CCDOC {candidate['doctor_code']!r} does not match an active room filter; "
+                        "candidate remains in read-only unmatched diagnostics"
+                    )
+                for locator in candidate["record_locators"]:
+                    record_number = int(locator["record_number"])
+                    if room_id in room_candidates:
+                        self._diagnostics.pop(record_number, None)
+                    else:
+                        self._diagnostics[record_number] = placement_reason
                 if time_filter is not None and candidate["time_kind"] != int(time_filter):
                     continue
-                status = "UNKNOWN"
-                room_id = room_map.get(candidate["doctor_code"])
                 if room_id in room_candidates:
                     room_candidates[room_id].append(candidate)
                 else:
                     unmatched_candidates.append(candidate)
+            visible_candidates = [
+                candidate
+                for candidate in projected_candidates
+                if time_filter is None or candidate["time_kind"] == int(time_filter)
+            ]
+            if visible_candidates:
+                status = (
+                    "AMBIGUOUS"
+                    if any(candidate["status"] == "AMBIGUOUS" for candidate in visible_candidates)
+                    else "UNKNOWN"
+                )
 
-        room_state = {
-            room_id: {
-                "status": status if candidates or status in {"DISABLED", "ERROR"} else "NONE",
+        room_state = {}
+        for room_id, candidates in room_candidates.items():
+            if candidates:
+                room_status = (
+                    "AMBIGUOUS"
+                    if any(candidate["status"] == "AMBIGUOUS" for candidate in candidates)
+                    else "UNKNOWN"
+                )
+            elif status in {"DISABLED", "ERROR"}:
+                room_status = status
+            else:
+                room_status = "NONE"
+            room_state[room_id] = {
+                "status": room_status,
                 "candidates": candidates,
             }
-            for room_id, candidates in room_candidates.items()
-        }
+        if unmatched_candidates:
+            unmatched_status = (
+                "AMBIGUOUS"
+                if any(candidate["status"] == "AMBIGUOUS" for candidate in unmatched_candidates)
+                else "UNKNOWN"
+            )
+        elif status in {"DISABLED", "ERROR"}:
+            unmatched_status = status
+        else:
+            unmatched_status = "NONE"
         source_health = {
             "status": self.source_status,
             "filename": self.config.rg011m1_visit_filename,
@@ -370,7 +457,7 @@ class VisitMonitor:
             },
             "rooms": room_state,
             "unmatched": {
-                "status": status if unmatched_candidates or status in {"DISABLED", "ERROR"} else "NONE",
+                "status": unmatched_status,
                 "candidates": unmatched_candidates,
             },
             "pending": pending,
