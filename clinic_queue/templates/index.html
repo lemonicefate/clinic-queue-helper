@@ -248,6 +248,19 @@
                 </h3>
                 {% if monitor_room.status == 'ERROR' %}
                   <p class="empty visit-monitor-error" role="alert">VISIT 資料來源錯誤：{{ visit_monitor.source_health.error }}</p>
+                {% elif monitor_room.candidates %}
+                  {% for candidate in monitor_room.candidates %}
+                    <article class="patient visit-candidate" data-visit-encounter-key="{{ candidate.encounter_key }}">
+                      <div class="patient-main">
+                        <div class="patient-identity">
+                          <strong>#{{ candidate.patient_no }} {{ candidate.patient_name }}</strong>
+                          <div class="patient-badges"><span class="badge">{{ candidate.status }}</span></div>
+                        </div>
+                        <span class="secondary">病歷號 {{ candidate.patient_no }}</span>
+                      </div>
+                      <span class="secondary">醫師 {{ candidate.doctor_code }} · {{ candidate.clinic_session }} · {{ candidate.evidence_reason }}</span>
+                    </article>
+                  {% endfor %}
                 {% else %}
                   <p class="empty">目前沒有看診中（實驗）觀測</p>
                 {% endif %}

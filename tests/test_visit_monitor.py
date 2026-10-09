@@ -225,3 +225,242 @@ def test_enabled_empty_monitor_leaves_ordinary_queue_unchanged(tmp_path):
     assert [entry["patient_no"] for entry in payload["rooms"]["1"]["waiting"]] == ["100001"]
     assert payload["rooms"]["1"]["waiting"][0]["queue_position"] == 1
     assert payload["visit_monitor"]["status"] == "NONE"
+
+
+def test_stable_appended_visit_record_becomes_unknown_candidate_after_two_reads(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=True,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(his_path / "RG011M1.DBF", [("RG-001", "100001", "DOC1", "1510070001")])
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(visit_path, [])
+    app = create_app(load_config(config_path))
+
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            }
+        ],
+    )
+    app.state.visit_monitor.poll_once()
+    first_response = asyncio.run(get_json(app, "/api/visit-monitor"))
+    first_payload = first_response.json()
+    assert first_payload["rooms"]["1"]["candidates"] == []
+    assert first_payload["pending"][0]["record_number"] == 1
+
+    app.state.visit_monitor.poll_once()
+    second_response = asyncio.run(get_json(app, "/api/visit-monitor"))
+    payload = second_response.json()
+
+    assert second_response.status_code == 200
+    assert payload["status"] == "UNKNOWN"
+    assert payload["rooms"]["1"]["status"] == "UNKNOWN"
+    assert payload["rooms"]["1"]["candidates"] == [
+        {
+            "status": "UNKNOWN",
+            "encounter_key": "relkey:RG-001",
+            "patient_no": "100001",
+            "patient_name": "100001",
+            "doctor_code": "DOC1",
+            "time_kind": 1,
+            "clinic_session": "早診",
+            "evidence_reason": "unique NUM+CCDOC+date+TIME_KIND fallback",
+            "record_locators": [
+                {"source": "RG011M1_VISIT.DBF", "record_number": 1}
+            ],
+        }
+    ]
+    assert payload["source_health"]["status"] == "OK"
+    assert payload["source_health"]["record_count"] == 1
+
+    page_response = asyncio.run(get_json(app, "/"))
+    assert "UNKNOWN" in page_response.text
+    assert "#100001" in page_response.text
+    monitor_area = re.search(
+        r'<section class="visit-monitor"[^>]*>.*?</section>',
+        page_response.text,
+        flags=re.DOTALL,
+    )
+    assert monitor_area is not None
+    assert "data-action=" not in monitor_area.group(0)
+
+
+def test_visit_prefers_exact_sys2015_association_over_composite_fallback(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=True,
+        doctor_room_map={"DOC1": 1},
+    )
+    today = date.today()
+    write_dbf(
+        his_path / "RG011M1.DBF",
+        [
+            ("NUM", "C", 6),
+            ("TETDAY", "D", 8),
+            ("CCDATE", "D", 8),
+            ("CCTIME", "C", 4),
+            ("CCDOC", "C", 6),
+            ("TIME_KIND", "C", 1),
+            ("SYS_2015", "C", 12),
+            ("OVER", "C", 1),
+            ("TREAT", "C", 1),
+            ("GINO1", "C", 10),
+            ("RELKEY", "C", 12),
+        ],
+        [
+            {
+                "NUM": "100001",
+                "TETDAY": today,
+                "CCDATE": today,
+                "CCTIME": "0900",
+                "CCDOC": "DOC1",
+                "TIME_KIND": "1",
+                "SYS_2015": "SYS-A",
+                "TREAT": "N",
+                "GINO1": "1510070001",
+                "RELKEY": "RG-A",
+            },
+            {
+                "NUM": "100001",
+                "TETDAY": today,
+                "CCDATE": today,
+                "CCTIME": "0910",
+                "CCDOC": "DOC1",
+                "TIME_KIND": "1",
+                "SYS_2015": "SYS-B",
+                "TREAT": "N",
+                "GINO1": "1510070002",
+                "RELKEY": "RG-B",
+            },
+        ],
+    )
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(visit_path, [])
+    app = create_app(load_config(config_path))
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "SYS-B",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": today,
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            }
+        ],
+    )
+
+    app.state.visit_monitor.poll_once()
+    app.state.visit_monitor.poll_once()
+    payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+
+    candidate = payload["rooms"]["1"]["candidates"][0]
+    assert candidate["encounter_key"] == "relkey:RG-B"
+    assert candidate["evidence_reason"] == "exact SYS_2015 association"
+
+
+def test_visit_num_alone_does_not_associate_a_candidate(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=True,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(his_path / "RG011M1.DBF", [("RG-001", "100001", "DOC1", "1510070001")])
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(visit_path, [])
+    app = create_app(load_config(config_path))
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "",
+                "NUM": "100001",
+                "CCDOC": "",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            }
+        ],
+    )
+
+    app.state.visit_monitor.poll_once()
+    app.state.visit_monitor.poll_once()
+    payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+
+    assert payload["rooms"]["1"]["candidates"] == []
+    assert payload["diagnostics"] == [
+        {
+            "record_number": 1,
+            "reason": "NUM, CCDOC, date, and TIME_KIND are required for fallback",
+        }
+    ]
+
+
+def test_changing_visit_bytes_reset_stability_until_two_identical_reads(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=True,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(his_path / "RG011M1.DBF", [("RG-001", "100001", "DOC1", "1510070001")])
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "080000",
+            }
+        ],
+    )
+    app = create_app(load_config(config_path))
+
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            }
+        ],
+    )
+    app.state.visit_monitor.poll_once()
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090001",
+            }
+        ],
+    )
+    app.state.visit_monitor.poll_once()
+    pending_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert pending_payload["rooms"]["1"]["candidates"] == []
+    assert pending_payload["pending"][0]["consecutive_reads"] == 1
+
+    app.state.visit_monitor.poll_once()
+    accepted_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert accepted_payload["rooms"]["1"]["candidates"][0]["status"] == "UNKNOWN"

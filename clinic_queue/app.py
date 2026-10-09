@@ -50,7 +50,12 @@ def create_app(config: AppConfig) -> FastAPI:
     store = QueueStore(config.sqlite_path)
     store.initialize_room_doctor_codes(config.doctor_room_map)
     poller = HISPoller(config, store)
-    visit_monitor = VisitMonitor(config)
+    visit_monitor = VisitMonitor(
+        config,
+        encounter_provider=lambda: poller.tracked_by_recno.values(),
+        room_map_provider=store.get_doctor_room_map,
+    )
+    poller.attach_visit_monitor(visit_monitor)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

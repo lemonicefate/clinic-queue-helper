@@ -7,11 +7,15 @@ import logging
 import sqlite3
 import time
 from datetime import date
+from typing import TYPE_CHECKING
 
 from .config import AppConfig
 from .dbf import DBFHeader, DBFReader
 from .his import EncounterSnapshot, PatientNameLookup, RAW_HIS_FIELDS, scan_today, snapshot_from_record
 from .queue import QueueStore
+
+if TYPE_CHECKING:
+    from .visit import VisitMonitor
 
 
 logger = logging.getLogger("clinic_queue.polling")
@@ -36,9 +40,20 @@ class HISPoller:
         self._header_layout: tuple[object, ...] | None = None
         self._last_full_scan = 0.0
         self._patient_names: PatientNameLookup | None = None
+        self.visit_monitor: VisitMonitor | None = None
         self.his_stale = False
         self.his_error: str | None = None
         self.storage_error: str | None = None
+
+    def attach_visit_monitor(self, monitor: VisitMonitor) -> None:
+        """Run the optional VISIT observer after each successful HIS poll."""
+        self.visit_monitor = monitor
+
+    def _poll_visit_monitor(self) -> None:
+        if self.visit_monitor is None or not self.visit_monitor.enabled:
+            return
+        self.visit_monitor.set_encounters(self.tracked_by_recno.values())
+        self.visit_monitor.poll_once()
 
     def initialize(self) -> None:
         """Perform the initial recovery scan, retaining prior SQLite state on read failure."""
@@ -163,6 +178,7 @@ class HISPoller:
                 else:
                     self._poll_incremental(header)
             self._recovered()
+            self._poll_visit_monitor()
         except sqlite3.Error as exc:
             logger.exception("SQLite queue persistence failed during HIS polling")
             self.storage_error = str(exc)
