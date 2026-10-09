@@ -1532,6 +1532,52 @@ def test_his_poller_rebuilds_visit_baseline_after_layout_change_without_record_r
     assert second_payload["rooms"]["1"]["candidates"] == []
 
 
+@pytest.mark.parametrize("interruption", ["incomplete", "failed"])
+def test_replacement_baseline_restarts_after_interrupted_read(tmp_path, interruption):
+    app, visit_path = _make_candidate_app(tmp_path)
+    replacement = visit_path.with_name("replacement.DBF")
+    write_visit_fixture(
+        replacement,
+        [
+            {
+                "SYS_2015": "",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090001",
+            }
+        ],
+    )
+    os.replace(replacement, visit_path)
+    replacement_bytes = visit_path.read_bytes()
+
+    app.state.visit_monitor.poll_once()
+    pending_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert pending_payload["source_health"]["status"] == "STALE"
+    assert pending_payload["rooms"]["1"]["candidates"]
+
+    if interruption == "incomplete":
+        header_length = int.from_bytes(replacement_bytes[8:10], "little")
+        visit_path.write_bytes(replacement_bytes[: header_length + 3])
+    else:
+        visit_path.write_bytes(b"")
+    app.state.visit_monitor.poll_once()
+
+    visit_path.write_bytes(replacement_bytes)
+    app.state.visit_monitor.poll_once()
+    recovered_once = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert recovered_once["source_health"]["status"] == "STALE"
+    assert recovered_once["baseline"]["record_count"] == 0
+    assert recovered_once["rooms"]["1"]["candidates"]
+
+    app.state.visit_monitor.poll_once()
+    recovered_twice = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert recovered_twice["source_health"]["status"] == "OK"
+    assert recovered_twice["baseline"]["record_count"] == 1
+    assert recovered_twice["rooms"]["1"]["candidates"] == []
+
+
 def test_stable_logical_deletion_removes_only_deleted_evidence(tmp_path):
     app, visit_path = _make_candidate_app(tmp_path)
 

@@ -205,7 +205,8 @@ class VisitMonitor:
             ):
                 self._pending_baseline = snapshot
                 self._mark_source_failure(
-                    DBFReadError("VISIT source changed; waiting for a stable baseline read")
+                    DBFReadError("VISIT source changed; waiting for a stable baseline read"),
+                    preserve_pending_baseline=True,
                 )
                 return
 
@@ -344,7 +345,11 @@ class VisitMonitor:
             ],
         }
 
-    def _mark_source_failure(self, error: Exception) -> None:
+    def _mark_source_failure(
+        self, error: Exception, *, preserve_pending_baseline: bool = False
+    ) -> None:
+        if not preserve_pending_baseline:
+            self._pending_baseline = None
         self._pending_records.clear()
         has_last_observation = self.baseline_established
         self.source_status = "STALE" if has_last_observation else "ERROR"
