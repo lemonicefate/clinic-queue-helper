@@ -69,6 +69,11 @@
       .visit-monitor-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin: 0; color: #245c55; font-size: .95rem; }
       .visit-monitor-heading .badge { background: #deeee9; color: #245c55; }
       .visit-monitor-error { color: var(--error-ink); }
+      .visit-monitor-diagnostics { margin-top: 1.1rem; padding: 1.1rem 1.25rem; border: 1px solid #d7e0e1; border-radius: .9rem; background: #f8faf9; }
+      .visit-monitor-diagnostics h2 { margin: 0; }
+      .visit-monitor-diagnostics h3 { margin-bottom: .45rem; }
+      .visit-diagnostic { display: flex; flex-wrap: wrap; gap: .35rem .75rem; margin: .45rem 0; padding: .7rem .85rem; border: 1px solid #e0e8e8; border-radius: .7rem; background: var(--surface); }
+      .visit-diagnostic strong { color: #29464c; }
       .section-count { min-width: 1.55rem; padding: .08rem .38rem; border-radius: 999px; background: #edf3f3; color: #466168; font-size: .78rem; font-variant-numeric: tabular-nums; text-align: center; }
       .patient { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .65rem 1rem; margin: .45rem 0; padding: .8rem .85rem; border: 1px solid #e0e8e8; border-radius: .7rem; background: var(--surface); }
       .patient:hover { border-color: #c5d6d6; }
@@ -292,6 +297,40 @@
           </section>
         {% endfor %}
       </div>
+
+      {% if visit_monitor %}
+        {% set visit_diagnostic_count = visit_monitor.unmatched.candidates | length + visit_monitor.diagnostics | length %}
+        <section class="visit-monitor-diagnostics" aria-label="VISIT 未納入與診斷">
+          <div class="section-heading">
+            <h2>VISIT 未納入／診斷</h2>
+            <span class="section-count">{{ visit_diagnostic_count }}</span>
+          </div>
+          <h3>未納入診間候選</h3>
+          {% for candidate in visit_monitor.unmatched.candidates %}
+            <article class="patient visit-candidate visit-unmatched-candidate" data-visit-encounter-key="{{ candidate.encounter_key }}">
+              <div class="patient-main">
+                <div class="patient-identity">
+                  <strong>#{{ candidate.patient_no }} {{ candidate.patient_name }}</strong>
+                  <div class="patient-badges"><span class="badge">{{ candidate.status }}</span></div>
+                </div>
+                <span class="secondary">病歷號 {{ candidate.patient_no }}</span>
+              </div>
+              <span class="secondary">醫師 {{ candidate.doctor_code }} · {{ candidate.clinic_session }} · {{ candidate.evidence_reason }}</span>
+            </article>
+          {% else %}
+            <p class="empty">目前沒有未納入診間的 VISIT 候選</p>
+          {% endfor %}
+          <h3>未解析／刪除／已完成關聯</h3>
+          {% for diagnostic in visit_monitor.diagnostics %}
+            <article class="visit-diagnostic" data-visit-record-number="{{ diagnostic.record_number }}">
+              <strong>VISIT 紀錄 #{{ diagnostic.record_number }}</strong>
+              <span class="secondary">{{ diagnostic.reason }}</span>
+            </article>
+          {% else %}
+            <p class="empty">目前沒有 VISIT 關聯診斷</p>
+          {% endfor %}
+        </section>
+      {% endif %}
 
       <section class="unmatched" aria-label="未納入一診／二診篩選">
         <div class="section-heading"><h2>未納入一診／二診篩選</h2></div>

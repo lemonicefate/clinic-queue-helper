@@ -1,7 +1,10 @@
 import asyncio
-import json
-import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+import json
+import os
+import re
+from threading import Event, Lock
 
 import httpx
 import pytest
@@ -844,6 +847,155 @@ def test_blank_unmatched_or_unmapped_visit_doctor_stays_read_only_unmatched(
     assert reason_fragment in payload["diagnostics"][0]["reason"]
 
 
+def test_visit_unmatched_and_diagnostics_render_in_separate_read_only_section(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=True,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(
+        his_path / "RG011M1.DBF",
+        [
+            {
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "RELKEY": "REL-U",
+                "SYS_2015": "SYS-U",
+            },
+            {
+                "NUM": "100002",
+                "CCDOC": "DOC1",
+                "RELKEY": "REL-R",
+                "SYS_2015": "SYS-R",
+            },
+            {
+                "NUM": "100003",
+                "CCDOC": "DOC1",
+                "RELKEY": "REL-C",
+                "SYS_2015": "SYS-C",
+                "OVER": "T",
+            },
+        ],
+    )
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(visit_path, [])
+    app = create_app(load_config(config_path))
+
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "SYS-U",
+                "NUM": "100001",
+                "CCDOC": "DOCX",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            },
+            {
+                "SYS_2015": "",
+                "NUM": "100999",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090001",
+            },
+            {
+                "SYS_2015": "SYS-C",
+                "NUM": "100003",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090002",
+            },
+            {
+                "SYS_2015": "SYS-U",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090003",
+                "_DELETED": True,
+            },
+        ],
+    )
+    app.state.visit_monitor.poll_once()
+    app.state.visit_monitor.poll_once()
+
+    page_response = asyncio.run(get_json(app, "/"))
+    visit_diagnostics = re.search(
+        r'<section class="visit-monitor-diagnostics"[^>]*>.*?</section>',
+        page_response.text,
+        flags=re.DOTALL,
+    )
+    ordinary_unmatched = re.search(
+        r'<section class="unmatched"[^>]*>.*?</section>',
+        page_response.text,
+        flags=re.DOTALL,
+    )
+
+    assert page_response.status_code == 200
+    assert visit_diagnostics is not None
+    assert "#100001" in visit_diagnostics.group(0)
+    assert "no unique NUM+CCDOC+date+TIME_KIND encounter match" in visit_diagnostics.group(0)
+    assert "associated encounter is already HIS-derived COMPLETED" in visit_diagnostics.group(0)
+    assert "VISIT evidence is logically deleted" in visit_diagnostics.group(0)
+    assert "data-action=" not in visit_diagnostics.group(0)
+    assert not re.search(r"<(?:button|form|input|select)\b", visit_diagnostics.group(0))
+    assert ordinary_unmatched is not None
+    assert "#100001" not in ordinary_unmatched.group(0)
+
+
+def test_visit_monitor_concurrent_poller_and_httpx_requests_are_safe(tmp_path):
+    app, _ = _make_candidate_app(tmp_path)
+
+    monitor = app.state.visit_monitor
+    original_provider = monitor._encounter_provider
+    assert original_provider is not None
+    provider_entered = Event()
+    release_provider = Event()
+    provider_calls = 0
+    provider_calls_lock = Lock()
+
+    def gated_provider():
+        nonlocal provider_calls
+        with provider_calls_lock:
+            provider_calls += 1
+            first_call = provider_calls == 1
+        if first_call:
+            provider_entered.set()
+            if not release_provider.wait(timeout=5):
+                raise AssertionError("timed out waiting to release the encounter snapshot")
+        return original_provider()
+
+    monitor._encounter_provider = gated_provider
+    poll_started = Event()
+    poll_finished = Event()
+
+    def poll_once():
+        poll_started.set()
+        app.state.his_poller.poll_once()
+        poll_finished.set()
+
+    async def request_once():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.get("/api/visit-monitor")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        request_future = executor.submit(lambda: asyncio.run(request_once()))
+        assert provider_entered.wait(timeout=5)
+        poll_future = executor.submit(poll_once)
+        assert poll_started.wait(timeout=5)
+        assert not poll_finished.wait(timeout=0.2)
+        release_provider.set()
+        response = request_future.result()
+        poll_future.result()
+
+    assert response.status_code == 200
+    assert response.json()["rooms"]["1"]["candidates"]
+
+
 def test_historical_invalid_and_unknown_session_visit_rows_stay_diagnostic_only(tmp_path):
     config_path, his_path = write_config(
         tmp_path,
@@ -1221,6 +1373,43 @@ def test_changing_visit_bytes_reset_stability_until_two_identical_reads(tmp_path
     assert accepted_payload["rooms"]["1"]["candidates"][0]["status"] == "UNKNOWN"
 
 
+@pytest.mark.parametrize("interruption", ["incomplete", "failed"])
+def test_interrupted_visit_stability_requires_two_new_complete_reads(tmp_path, interruption):
+    app, visit_path = _make_candidate_app(tmp_path)
+
+    _write_candidate_visit(visit_path, stime="090001")
+    app.state.visit_monitor.poll_once()
+
+    changed_bytes = visit_path.read_bytes()
+    if interruption == "incomplete":
+        header_length = int.from_bytes(changed_bytes[8:10], "little")
+        visit_path.write_bytes(changed_bytes[: header_length + 3])
+    else:
+        visit_path.write_bytes(b"")
+    app.state.visit_monitor.poll_once()
+
+    interrupted_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert interrupted_payload["status"] == "STALE"
+    assert interrupted_payload["rooms"]["1"]["candidates"]
+    assert all(item["consecutive_reads"] == 0 for item in interrupted_payload["pending"])
+
+    visit_path.write_bytes(changed_bytes)
+    app.state.visit_monitor.poll_once()
+    recovered_once = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert recovered_once["source_health"]["status"] == "OK"
+    assert recovered_once["pending"] == [
+        {
+            "record_number": 1,
+            "consecutive_reads": 1,
+            "reason": "awaiting a second identical complete read",
+        }
+    ]
+
+    app.state.visit_monitor.poll_once()
+    recovered_twice = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert recovered_twice["rooms"]["1"]["candidates"]
+
+
 def _write_candidate_visit(path, *, deleted=False, stime="090000"):
     write_visit_fixture(
         path,
@@ -1252,6 +1441,95 @@ def _make_candidate_app(tmp_path):
     app.state.visit_monitor.poll_once()
     app.state.visit_monitor.poll_once()
     return app, visit_path
+
+
+def test_his_poller_poll_once_drives_visit_append_deletion_failure_and_recovery(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=True,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(his_path / "RG011M1.DBF", [("RG-001", "100001", "DOC1", "1510070001")])
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(visit_path, [])
+    app = create_app(load_config(config_path))
+    poller = app.state.his_poller
+
+    _write_candidate_visit(visit_path)
+    poller.poll_once()
+    first_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert first_payload["rooms"]["1"]["candidates"] == []
+    assert first_payload["pending"][0]["record_number"] == 1
+
+    poller.poll_once()
+    appended_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert appended_payload["rooms"]["1"]["candidates"]
+
+    _write_candidate_visit(visit_path, deleted=True)
+    poller.poll_once()
+    poller.poll_once()
+    deleted_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert deleted_payload["rooms"]["1"]["candidates"] == []
+    assert any("logically deleted" in item["reason"] for item in deleted_payload["diagnostics"])
+
+    _write_candidate_visit(visit_path, stime="090001")
+    poller.poll_once()
+    poller.poll_once()
+    restored_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert restored_payload["rooms"]["1"]["candidates"]
+
+    stable_bytes = visit_path.read_bytes()
+    visit_path.write_bytes(b"")
+    poller.poll_once()
+    stale_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert stale_payload["source_health"]["status"] == "STALE"
+    assert stale_payload["rooms"]["1"]["candidates"]
+
+    visit_path.write_bytes(stable_bytes)
+    poller.poll_once()
+    recovered_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert recovered_payload["source_health"]["status"] == "OK"
+    assert recovered_payload["rooms"]["1"]["candidates"]
+
+
+def test_his_poller_rebuilds_visit_baseline_after_layout_change_without_record_replay(tmp_path):
+    app, visit_path = _make_candidate_app(tmp_path)
+    replacement = visit_path.with_name("replacement.DBF")
+    write_dbf(
+        replacement,
+        [
+            ("SYS_2015", "C", 12),
+            ("NUM", "C", 6),
+            ("CCDOC", "C", 6),
+            ("SDATE", "D", 8),
+            ("TIME_KIND", "C", 1),
+            ("STIME", "C", 6),
+            ("EXTRA", "C", 1),
+        ],
+        [
+            {
+                "SYS_2015": "",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090001",
+                "EXTRA": "X",
+            }
+        ],
+    )
+    os.replace(replacement, visit_path)
+
+    app.state.his_poller.poll_once()
+    first_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert first_payload["source_health"]["status"] == "STALE"
+    assert first_payload["rooms"]["1"]["candidates"]
+
+    app.state.his_poller.poll_once()
+    second_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert second_payload["source_health"]["status"] == "OK"
+    assert second_payload["baseline"]["record_count"] == 1
+    assert second_payload["rooms"]["1"]["candidates"] == []
 
 
 def test_stable_logical_deletion_removes_only_deleted_evidence(tmp_path):
@@ -1339,11 +1617,44 @@ def test_temporary_visit_source_failure_preserves_last_observation_as_stale(tmp_
 
     app.state.visit_monitor.poll_once()
     payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    page_response = asyncio.run(get_json(app, "/")).text
 
     assert payload["status"] == "STALE"
     assert payload["source_health"]["status"] == "STALE"
+    assert payload["rooms"]["1"]["status"] == "STALE"
     assert payload["rooms"]["1"]["candidates"][0]["status"] == "UNKNOWN"
     assert payload["source_health"]["error"]
+    room_monitor = re.search(
+        r'<section class="visit-monitor"[^>]*data-visit-monitor-room="1"[^>]*>.*?</section>',
+        page_response,
+        flags=re.DOTALL,
+    )
+    assert room_monitor is not None
+    assert "STALE" in room_monitor.group(0)
+    assert "VISIT 資料來源暫時失效" in room_monitor.group(0)
+
+
+def test_stale_visit_source_propagates_to_unmatched_monitor_status(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=True,
+        doctor_room_map={},
+    )
+    write_rg_fixture(his_path / "RG011M1.DBF", [("RG-001", "100001", "DOC1", "1510070001")])
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(visit_path, [])
+    app = create_app(load_config(config_path))
+    _write_candidate_visit(visit_path)
+    app.state.visit_monitor.poll_once()
+    app.state.visit_monitor.poll_once()
+
+    visit_path.unlink()
+    app.state.visit_monitor.poll_once()
+    payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+
+    assert payload["unmatched"]["status"] == "STALE"
+    assert payload["unmatched"]["candidates"]
+    assert payload["unmatched"]["candidates"][0]["status"] == "UNKNOWN"
 
 
 def test_truncated_visit_record_stays_pending_and_recovers_without_clearing_evidence(tmp_path):
@@ -1369,8 +1680,6 @@ def test_replaced_visit_file_rebuilds_baseline_after_two_stable_reads(tmp_path):
     app, visit_path = _make_candidate_app(tmp_path)
     replacement = visit_path.with_name("replacement.DBF")
     write_visit_fixture(replacement, [])
-    import os
-
     os.replace(replacement, visit_path)
 
     app.state.visit_monitor.poll_once()

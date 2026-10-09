@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 import logging
+from threading import RLock
 from typing import Callable, Iterable, Mapping
 
 from .config import AppConfig
@@ -56,7 +57,7 @@ class VisitMonitor:
         self.source_path = config.his_data_path / config.rg011m1_visit_filename
         self.source_status = "DISABLED" if not self.enabled else "ERROR"
         self.source_error: str | None = None
-        self.status = self.source_status
+        self._lock = RLock()
         self.baseline_established = False
         self.baseline_record_count = 0
         self.source_record_count = 0
@@ -71,16 +72,23 @@ class VisitMonitor:
         self._encounter_provider = encounter_provider
         self._room_map_provider = room_map_provider
         self._encounters: tuple[EncounterSnapshot, ...] = ()
+        self._encounters_snapshot_set = False
 
     def set_encounters(self, encounters: Iterable[EncounterSnapshot]) -> None:
         """Set the current-day RG encounter view used for association."""
-        self._encounters = tuple(encounters)
+        with self._lock:
+            self._encounters = tuple(encounters)
+            self._encounters_snapshot_set = True
 
     def initialize(self) -> None:
         """Read all visible rows as baseline data, never as events."""
         if not self.enabled:
             return
 
+        with self._lock:
+            self._initialize()
+
+    def _initialize(self) -> None:
         try:
             header, records, errors, identity = self._read_source()
             if errors:
@@ -105,7 +113,6 @@ class VisitMonitor:
         self.baseline_established = True
         self.source_status = "OK"
         self.source_error = None
-        self.status = "NONE"
         logger.info(
             "Established VISIT monitor baseline from %s records in %s",
             header.record_count,
@@ -141,7 +148,7 @@ class VisitMonitor:
         )
 
     def _provided_encounters(self) -> tuple[EncounterSnapshot, ...]:
-        if self._encounter_provider is None:
+        if self._encounters_snapshot_set or self._encounter_provider is None:
             return self._encounters
         try:
             return tuple(self._encounter_provider())
@@ -153,7 +160,7 @@ class VisitMonitor:
         if self._room_map_provider is None:
             return {}
         try:
-            return self._room_map_provider()
+            return dict(self._room_map_provider())
         except Exception as exc:  # pragma: no cover - defensive provider boundary
             logger.warning("VISIT room mapping is unavailable: %s", exc)
             return {}
@@ -163,6 +170,10 @@ class VisitMonitor:
         if not self.enabled:
             return
 
+        with self._lock:
+            self._poll_once()
+
+    def _poll_once(self) -> None:
         try:
             header, records, errors, identity = self._read_source()
         except (DBFReadError, OSError) as exc:
@@ -211,7 +222,6 @@ class VisitMonitor:
             self.baseline_established = True
             self.source_status = "OK"
             self.source_error = None
-            self.status = "NONE"
             return
 
         self._pending_baseline = None
@@ -227,9 +237,9 @@ class VisitMonitor:
                     + ", ".join(map(str, errors))
                 )
             )
-        else:
-            self.source_status = "OK"
-            self.source_error = None
+            return
+        self.source_status = "OK"
+        self.source_error = None
 
         records_by_recno = {record.recno: record for record in records}
         for recno, record in records_by_recno.items():
@@ -253,20 +263,6 @@ class VisitMonitor:
             self._accepted_records[recno] = record
             self._pending_records.pop(recno, None)
             self._unreadable_records.pop(recno, None)
-
-        self._refresh_status()
-
-    def _refresh_status(self) -> None:
-        if self.source_status == "ERROR":
-            self.status = "ERROR"
-            return
-        if self.source_status == "STALE":
-            self.status = "STALE"
-            return
-        if any(self._candidate_for_record(record) is not None for record in self._accepted_records.values()):
-            self.status = "UNKNOWN"
-        else:
-            self.status = "NONE"
 
     def _associate(self, record: DBFRecord) -> _Association:
         visit_date = parse_his_date(record.raw_value("SDATE"))
@@ -349,8 +345,8 @@ class VisitMonitor:
         }
 
     def _mark_source_failure(self, error: Exception) -> None:
+        self._pending_records.clear()
         has_last_observation = self.baseline_established
-        self.status = "STALE" if has_last_observation else "ERROR"
         self.source_status = "STALE" if has_last_observation else "ERROR"
         self.source_error = str(error)
         if not has_last_observation:
@@ -368,6 +364,10 @@ class VisitMonitor:
 
     def response(self, *, selected_time_kind: int | None = None) -> dict:
         """Return a JSON-safe, read-only projection for the API and template."""
+        with self._lock:
+            return self._response(selected_time_kind=selected_time_kind)
+
+    def _response(self, *, selected_time_kind: int | None = None) -> dict:
         if not self.enabled:
             status = "DISABLED"
             room_candidates = {1: [], 2: []}
@@ -456,7 +456,9 @@ class VisitMonitor:
 
         room_state = {}
         for room_id, candidates in room_candidates.items():
-            if candidates:
+            if status == "STALE":
+                room_status = "STALE"
+            elif candidates:
                 room_status = (
                     "AMBIGUOUS"
                     if any(candidate["status"] == "AMBIGUOUS" for candidate in candidates)
@@ -470,7 +472,9 @@ class VisitMonitor:
                 "status": room_status,
                 "candidates": candidates,
             }
-        if unmatched_candidates:
+        if status == "STALE":
+            unmatched_status = "STALE"
+        elif unmatched_candidates:
             unmatched_status = (
                 "AMBIGUOUS"
                 if any(candidate["status"] == "AMBIGUOUS" for candidate in unmatched_candidates)

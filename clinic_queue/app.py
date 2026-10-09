@@ -52,7 +52,7 @@ def create_app(config: AppConfig) -> FastAPI:
     poller = HISPoller(config, store)
     visit_monitor = VisitMonitor(
         config,
-        encounter_provider=lambda: poller.tracked_by_recno.values(),
+        encounter_provider=poller.encounter_snapshot,
         room_map_provider=store.get_doctor_room_map,
     )
     poller.attach_visit_monitor(visit_monitor)

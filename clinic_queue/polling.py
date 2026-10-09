@@ -35,6 +35,7 @@ class HISPoller:
         self.store = store
         self.recovery_interval_seconds = recovery_interval_seconds
         self.tracked_by_recno: dict[int, EncounterSnapshot] = {}
+        self._encounter_snapshot: tuple[EncounterSnapshot, ...] = ()
         self.pending_recno: set[int] = set()
         self.last_record_count: int | None = None
         self._header_layout: tuple[object, ...] | None = None
@@ -49,10 +50,14 @@ class HISPoller:
         """Run the optional VISIT observer after each successful HIS poll."""
         self.visit_monitor = monitor
 
+    def encounter_snapshot(self) -> tuple[EncounterSnapshot, ...]:
+        """Return the last complete immutable encounter view for VISIT association."""
+        return self._encounter_snapshot
+
     def _poll_visit_monitor(self) -> None:
         if self.visit_monitor is None or not self.visit_monitor.enabled:
             return
-        self.visit_monitor.set_encounters(self.tracked_by_recno.values())
+        self.visit_monitor.set_encounters(self._encounter_snapshot)
         self.visit_monitor.poll_once()
 
     def initialize(self) -> None:
@@ -97,6 +102,7 @@ class HISPoller:
             unreadable_recno=unreadable,
         )
         self.tracked_by_recno = {encounter.recno: encounter for encounter in encounters}
+        self._encounter_snapshot = tuple(self.tracked_by_recno.values())
         self.pending_recno = set(unreadable)
         self.last_record_count = header.record_count
         self._header_layout = self._layout(header)
@@ -154,6 +160,7 @@ class HISPoller:
         if unreadable:
             logger.warning("HIS poll skipped malformed record offsets: %s", unreadable)
             self.pending_recno.update(unreadable)
+        self._encounter_snapshot = tuple(self.tracked_by_recno.values())
         self.last_record_count = header.record_count
         self._header_layout = self._layout(header)
 
