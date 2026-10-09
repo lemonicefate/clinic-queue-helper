@@ -15,3 +15,27 @@ def test_readme_documents_windows_setup_configuration_and_lan_url():
     assert "/?room=1" in readme
     assert "Browsers check for shared queue changes every second" in readme
     assert "never write back to HIS files" in readme
+
+
+def test_visit_manual_validation_procedure_is_controlled_and_keeps_captures_outside_repo():
+    procedure = (PROJECT_ROOT / "docs" / "visit-manual-validation.md").read_text(
+        encoding="utf-8"
+    )
+
+    for required_heading in (
+        "Baseline capture",
+        "Call and completion/deletion",
+        "Repeated calls and rapid switching",
+        "Reopening a called patient",
+        "Completed-detail-page noise",
+        "Another physician or session",
+        "Assumptions and unresolved behavior",
+    ):
+        assert required_heading in procedure
+
+    lower_procedure = procedure.lower()
+    for forbidden_destination in ("git", "github", "ci", "repository", "issue tracker"):
+        assert forbidden_destination in lower_procedure
+    for protected_capture in ("real patient data", "dbf", "screenshots", "logs", "snapshots"):
+        assert protected_capture in lower_procedure
+    assert "active" in lower_procedure
