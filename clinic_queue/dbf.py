@@ -38,6 +38,7 @@ class DBFRecord:
     recno: int
     deleted: bool
     raw_fields: dict[str, str]
+    raw_bytes: bytes = b""
 
     def raw_value(self, name: str, default: str = "") -> str:
         return self.raw_fields.get(name.upper(), default)
@@ -228,4 +229,4 @@ class DBFReader:
             value_bytes = data[start : start + field.width]
             codec = self.encoding if field.kind in {"C", "V", "Q", "M", "G", "P", "W"} else "ascii"
             raw_fields[field.name] = value_bytes.decode(codec, errors="replace")
-        return DBFRecord(recno=recno, deleted=deleted, raw_fields=raw_fields)
+        return DBFRecord(recno=recno, deleted=deleted, raw_fields=raw_fields, raw_bytes=bytes(data))

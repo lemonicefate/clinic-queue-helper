@@ -16,6 +16,7 @@ from .config import AppConfig
 from .polling import HISPoller
 from .queue import QueueError, QueueStore
 from .state import ClinicSession, PresenceState, normalize_time_kind
+from .visit import VisitMonitor
 
 
 _TEMPLATE_DIR = Path(__file__).with_name("templates")
@@ -49,6 +50,7 @@ def create_app(config: AppConfig) -> FastAPI:
     store = QueueStore(config.sqlite_path)
     store.initialize_room_doctor_codes(config.doctor_room_map)
     poller = HISPoller(config, store)
+    visit_monitor = VisitMonitor(config)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -66,8 +68,22 @@ def create_app(config: AppConfig) -> FastAPI:
     application.state.config = config
     application.state.queue_store = store
     application.state.his_poller = poller
+    application.state.visit_monitor = visit_monitor
     templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
     poller.initialize()
+    visit_monitor.initialize()
+
+    def queue_response(request: Request) -> dict:
+        result = {
+            **store.get_board(_selected_time_kind(request)),
+            "his_stale": poller.his_stale,
+            "storage_error": poller.storage_error,
+        }
+        if visit_monitor.enabled:
+            result["visit_monitor"] = visit_monitor.response(
+                selected_time_kind=int(_selected_time_kind(request)),
+            )
+        return result
 
     @application.exception_handler(sqlite3.Error)
     async def sqlite_error_handler(request: Request, exc: sqlite3.Error) -> JSONResponse:
@@ -89,6 +105,11 @@ def create_app(config: AppConfig) -> FastAPI:
         selected_room = int(room_param) if room_param in ("1", "2") else None
         selected_time_kind = _selected_time_kind(request)
         board = store.get_board(selected_time_kind)
+        monitor_response = (
+            visit_monitor.response(selected_time_kind=int(selected_time_kind))
+            if visit_monitor.enabled
+            else None
+        )
         completed_encounters = [
             encounter
             for encounter in board["completed"]
@@ -128,17 +149,19 @@ def create_app(config: AppConfig) -> FastAPI:
                     **board,
                     "his_stale": poller.his_stale,
                     "storage_error": poller.storage_error,
+                    **({"visit_monitor": monitor_response} if monitor_response is not None else {}),
                 },
+                "visit_monitor": monitor_response,
             },
         )
 
     @application.get("/api/queue")
     async def get_queue(request: Request) -> dict:
-        return {
-            **store.get_board(_selected_time_kind(request)),
-            "his_stale": poller.his_stale,
-            "storage_error": poller.storage_error,
-        }
+        return queue_response(request)
+
+    @application.get("/api/visit-monitor")
+    async def get_visit_monitor(request: Request) -> dict:
+        return visit_monitor.response(selected_time_kind=int(_selected_time_kind(request)))
 
     @application.post("/api/room-doctor-code")
     async def update_room_doctor_code(update: RoomDoctorCodeUpdate, request: Request) -> dict:
