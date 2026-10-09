@@ -952,3 +952,180 @@ def test_changing_visit_bytes_reset_stability_until_two_identical_reads(tmp_path
     app.state.visit_monitor.poll_once()
     accepted_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
     assert accepted_payload["rooms"]["1"]["candidates"][0]["status"] == "UNKNOWN"
+
+
+def _write_candidate_visit(path, *, deleted=False, stime="090000"):
+    write_visit_fixture(
+        path,
+        [
+            {
+                "SYS_2015": "",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": stime,
+                "_DELETED": deleted,
+            }
+        ],
+    )
+
+
+def _make_candidate_app(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=True,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(his_path / "RG011M1.DBF", [("RG-001", "100001", "DOC1", "1510070001")])
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(visit_path, [])
+    app = create_app(load_config(config_path))
+    _write_candidate_visit(visit_path)
+    app.state.visit_monitor.poll_once()
+    app.state.visit_monitor.poll_once()
+    return app, visit_path
+
+
+def test_stable_logical_deletion_removes_only_deleted_evidence(tmp_path):
+    app, visit_path = _make_candidate_app(tmp_path)
+
+    _write_candidate_visit(visit_path, deleted=True)
+    app.state.visit_monitor.poll_once()
+    pending_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert pending_payload["rooms"]["1"]["candidates"]
+
+    app.state.visit_monitor.poll_once()
+    payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+
+    assert payload["status"] == "NONE"
+    assert payload["rooms"]["1"]["candidates"] == []
+    assert any("logically deleted" in item["reason"] for item in payload["diagnostics"])
+
+
+def test_deleting_one_duplicate_evidence_keeps_the_other_evidence(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=True,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(his_path / "RG011M1.DBF", [("RG-001", "100001", "DOC1", "1510070001")])
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(visit_path, [])
+    app = create_app(load_config(config_path))
+    rows = [
+        {
+            "SYS_2015": "",
+            "NUM": "100001",
+            "CCDOC": "DOC1",
+            "SDATE": date.today(),
+            "TIME_KIND": "1",
+            "STIME": "090000",
+        },
+        {
+            "SYS_2015": "",
+            "NUM": "100001",
+            "CCDOC": "DOC1",
+            "SDATE": date.today(),
+            "TIME_KIND": "1",
+            "STIME": "090001",
+        },
+    ]
+    write_visit_fixture(visit_path, rows)
+    app.state.visit_monitor.poll_once()
+    app.state.visit_monitor.poll_once()
+    before = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert before["rooms"]["1"]["candidates"][0]["evidence_count"] == 2
+
+    rows[0]["_DELETED"] = True
+    write_visit_fixture(visit_path, rows)
+    app.state.visit_monitor.poll_once()
+    app.state.visit_monitor.poll_once()
+    after = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+
+    candidate = after["rooms"]["1"]["candidates"][0]
+    assert candidate["evidence_count"] == 1
+    assert candidate["record_locators"] == [
+        {"source": "RG011M1_VISIT.DBF", "record_number": 2}
+    ]
+
+
+def test_first_visit_source_failure_is_error_without_a_fabricated_candidate(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=True,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(his_path / "RG011M1.DBF", [("RG-001", "100001", "DOC1", "1510070001")])
+    app = create_app(load_config(config_path))
+
+    payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+
+    assert payload["status"] == "ERROR"
+    assert payload["source_health"]["status"] == "ERROR"
+    assert payload["rooms"]["1"]["candidates"] == []
+
+
+def test_temporary_visit_source_failure_preserves_last_observation_as_stale(tmp_path):
+    app, visit_path = _make_candidate_app(tmp_path)
+    visit_path.unlink()
+
+    app.state.visit_monitor.poll_once()
+    payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+
+    assert payload["status"] == "STALE"
+    assert payload["source_health"]["status"] == "STALE"
+    assert payload["rooms"]["1"]["candidates"][0]["status"] == "UNKNOWN"
+    assert payload["source_health"]["error"]
+
+
+def test_truncated_visit_record_stays_pending_and_recovers_without_clearing_evidence(tmp_path):
+    app, visit_path = _make_candidate_app(tmp_path)
+    complete_bytes = visit_path.read_bytes()
+    header_length = int.from_bytes(complete_bytes[8:10], "little")
+    visit_path.write_bytes(complete_bytes[: header_length + 3])
+
+    app.state.visit_monitor.poll_once()
+    stale_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert stale_payload["status"] == "STALE"
+    assert stale_payload["pending"]
+    assert stale_payload["rooms"]["1"]["candidates"]
+
+    visit_path.write_bytes(complete_bytes)
+    app.state.visit_monitor.poll_once()
+    recovered_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert recovered_payload["source_health"]["status"] == "OK"
+    assert recovered_payload["rooms"]["1"]["candidates"]
+
+
+def test_replaced_visit_file_rebuilds_baseline_after_two_stable_reads(tmp_path):
+    app, visit_path = _make_candidate_app(tmp_path)
+    replacement = visit_path.with_name("replacement.DBF")
+    write_visit_fixture(replacement, [])
+    import os
+
+    os.replace(replacement, visit_path)
+
+    app.state.visit_monitor.poll_once()
+    first_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert first_payload["status"] == "STALE"
+    assert first_payload["rooms"]["1"]["candidates"]
+
+    app.state.visit_monitor.poll_once()
+    second_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
+    assert second_payload["source_health"]["status"] == "OK"
+    assert second_payload["baseline"]["record_count"] == 0
+    assert second_payload["rooms"]["1"]["candidates"] == []
+
+
+def test_restart_rebuilds_visit_baseline_without_replaying_existing_rows(tmp_path):
+    first_app, visit_path = _make_candidate_app(tmp_path)
+    first_payload = asyncio.run(get_json(first_app, "/api/visit-monitor")).json()
+    assert first_payload["rooms"]["1"]["candidates"]
+
+    restarted_app = create_app(first_app.state.config)
+    restarted_payload = asyncio.run(get_json(restarted_app, "/api/visit-monitor")).json()
+
+    assert restarted_payload["status"] == "NONE"
+    assert restarted_payload["baseline"]["record_count"] == 1
+    assert restarted_payload["rooms"]["1"]["candidates"] == []

@@ -22,6 +22,13 @@ class _PendingRecord:
     consecutive_reads: int
 
 
+@dataclass
+class _PendingBaseline:
+    identity: tuple[int, int]
+    layout: tuple[object, ...]
+    records: tuple[DBFRecord, ...]
+
+
 @dataclass(frozen=True)
 class _Association:
     encounter: EncounterSnapshot | None
@@ -59,6 +66,8 @@ class VisitMonitor:
         self._unreadable_records: dict[int, str] = {}
         self._diagnostics: dict[int, str] = {}
         self._header_layout: tuple[object, ...] | None = None
+        self._source_identity: tuple[int, int] | None = None
+        self._pending_baseline: _PendingBaseline | None = None
         self._encounter_provider = encounter_provider
         self._room_map_provider = room_map_provider
         self._encounters: tuple[EncounterSnapshot, ...] = ()
@@ -73,14 +82,14 @@ class VisitMonitor:
             return
 
         try:
-            header, records, errors = self._read_source()
+            header, records, errors, identity = self._read_source()
             if errors:
                 raise DBFReadError(
                     "VISIT source contains unreadable records: "
                     + ", ".join(map(str, errors))
                 )
         except (DBFReadError, OSError) as exc:
-            self._set_error(exc)
+            self._mark_source_failure(exc)
             return
 
         self._baseline_records = {record.recno: record for record in records}
@@ -89,6 +98,8 @@ class VisitMonitor:
         self._unreadable_records.clear()
         self._diagnostics.clear()
         self._header_layout = self._layout(header)
+        self._source_identity = identity
+        self._pending_baseline = None
         self.baseline_record_count = header.record_count
         self.source_record_count = header.record_count
         self.baseline_established = True
@@ -105,7 +116,7 @@ class VisitMonitor:
     def _layout(header: DBFHeader) -> tuple[object, ...]:
         return (header.header_length, header.record_length, header.fields)
 
-    def _read_source(self) -> tuple[DBFHeader, list[DBFRecord], list[int]]:
+    def _read_source(self) -> tuple[DBFHeader, list[DBFRecord], list[int], tuple[int, int]]:
         reader = DBFReader(self.source_path)
         header = reader.read_header()
         errors: list[int] = []
@@ -116,7 +127,18 @@ class VisitMonitor:
                 record_errors=errors,
             )
         )
-        return header, records, errors
+        stat = self.source_path.stat()
+        identity = (int(stat.st_dev), int(stat.st_ino or stat.st_ctime_ns))
+        return header, records, errors, identity
+
+    @staticmethod
+    def _same_baseline(left: _PendingBaseline, right: _PendingBaseline) -> bool:
+        return (
+            left.identity == right.identity
+            and left.layout == right.layout
+            and tuple((record.recno, record.raw_bytes) for record in left.records)
+            == tuple((record.recno, record.raw_bytes) for record in right.records)
+        )
 
     def _provided_encounters(self) -> tuple[EncounterSnapshot, ...]:
         if self._encounter_provider is None:
@@ -142,28 +164,48 @@ class VisitMonitor:
             return
 
         try:
-            header, records, errors = self._read_source()
+            header, records, errors, identity = self._read_source()
         except (DBFReadError, OSError) as exc:
-            self._set_error(exc)
+            self._mark_source_failure(exc)
             return
 
         layout = self._layout(header)
-        if not self.baseline_established or self._header_layout != layout:
-            # A layout change invalidates physical offsets. Establishing a new
-            # baseline is safe and prevents record-number reuse from replaying.
+        reset_required = (
+            not self.baseline_established
+            or self._header_layout != layout
+            or self._source_identity != identity
+            or header.record_count < self.baseline_record_count
+        )
+        if reset_required:
+            # A layout/replacement/shrink invalidates physical offsets. Require
+            # two identical complete source reads before accepting a new
+            # baseline, so reused record numbers cannot replay as events.
             if errors:
-                self._set_error(
+                self._mark_source_failure(
                     DBFReadError(
                         "VISIT source contains unreadable records: "
                         + ", ".join(map(str, errors))
                     )
                 )
                 return
+            snapshot = _PendingBaseline(identity, layout, tuple(records))
+            if self._pending_baseline is None or not self._same_baseline(
+                self._pending_baseline, snapshot
+            ):
+                self._pending_baseline = snapshot
+                self._mark_source_failure(
+                    DBFReadError("VISIT source changed; waiting for a stable baseline read")
+                )
+                return
+
             self._baseline_records = {record.recno: record for record in records}
             self._accepted_records.clear()
             self._pending_records.clear()
+            self._unreadable_records.clear()
             self._diagnostics.clear()
             self._header_layout = layout
+            self._source_identity = identity
+            self._pending_baseline = None
             self.baseline_record_count = header.record_count
             self.source_record_count = header.record_count
             self.baseline_established = True
@@ -172,13 +214,22 @@ class VisitMonitor:
             self.status = "NONE"
             return
 
-        self.source_status = "OK"
-        self.source_error = None
+        self._pending_baseline = None
         self.source_record_count = header.record_count
         self._unreadable_records = {
             recno: "record is incomplete or malformed; waiting for a complete read"
             for recno in errors
         }
+        if errors:
+            self._mark_source_failure(
+                DBFReadError(
+                    "VISIT source contains unreadable records: "
+                    + ", ".join(map(str, errors))
+                )
+            )
+        else:
+            self.source_status = "OK"
+            self.source_error = None
 
         records_by_recno = {record.recno: record for record in records}
         for recno, record in records_by_recno.items():
@@ -208,6 +259,9 @@ class VisitMonitor:
     def _refresh_status(self) -> None:
         if self.source_status == "ERROR":
             self.status = "ERROR"
+            return
+        if self.source_status == "STALE":
+            self.status = "STALE"
             return
         if any(self._candidate_for_record(record) is not None for record in self._accepted_records.values()):
             self.status = "UNKNOWN"
@@ -258,6 +312,9 @@ class VisitMonitor:
         return _Association(None, "no unique NUM+CCDOC+date+TIME_KIND encounter match")
 
     def _candidate_for_record(self, record: DBFRecord) -> dict | None:
+        if record.deleted:
+            self._diagnostics[record.recno] = "VISIT evidence is logically deleted"
+            return None
         association = self._associate(record)
         encounter = association.encounter
         if encounter is None:
@@ -291,19 +348,22 @@ class VisitMonitor:
             ],
         }
 
-    def _set_error(self, error: Exception) -> None:
-        self.status = "ERROR"
-        self.source_status = "ERROR"
+    def _mark_source_failure(self, error: Exception) -> None:
+        has_last_observation = self.baseline_established
+        self.status = "STALE" if has_last_observation else "ERROR"
+        self.source_status = "STALE" if has_last_observation else "ERROR"
         self.source_error = str(error)
-        self.baseline_established = False
-        self.baseline_record_count = 0
-        self.source_record_count = 0
-        self._baseline_records.clear()
-        self._accepted_records.clear()
-        self._pending_records.clear()
-        self._unreadable_records.clear()
-        self._diagnostics.clear()
-        self._header_layout = None
+        if not has_last_observation:
+            self.baseline_established = False
+            self.baseline_record_count = 0
+            self.source_record_count = 0
+            self._baseline_records.clear()
+            self._accepted_records.clear()
+            self._pending_records.clear()
+            self._unreadable_records.clear()
+            self._diagnostics.clear()
+            self._header_layout = None
+            self._source_identity = None
         logger.warning("VISIT monitor source is unavailable: %s", error)
 
     def response(self, *, selected_time_kind: int | None = None) -> dict:
@@ -317,7 +377,7 @@ class VisitMonitor:
             room_candidates = {1: [], 2: []}
             unmatched_candidates = []
         else:
-            status = "NONE"
+            status = "STALE" if self.source_status == "STALE" else "NONE"
             room_candidates = {1: [], 2: []}
             unmatched_candidates = []
             time_filter = normalize_time_kind(selected_time_kind)
@@ -387,7 +447,7 @@ class VisitMonitor:
                 for candidate in projected_candidates
                 if time_filter is None or candidate["time_kind"] == int(time_filter)
             ]
-            if visible_candidates:
+            if visible_candidates and status != "STALE":
                 status = (
                     "AMBIGUOUS"
                     if any(candidate["status"] == "AMBIGUOUS" for candidate in visible_candidates)
@@ -402,7 +462,7 @@ class VisitMonitor:
                     if any(candidate["status"] == "AMBIGUOUS" for candidate in candidates)
                     else "UNKNOWN"
                 )
-            elif status in {"DISABLED", "ERROR"}:
+            elif status in {"DISABLED", "ERROR", "STALE"}:
                 room_status = status
             else:
                 room_status = "NONE"
@@ -416,7 +476,7 @@ class VisitMonitor:
                 if any(candidate["status"] == "AMBIGUOUS" for candidate in unmatched_candidates)
                 else "UNKNOWN"
             )
-        elif status in {"DISABLED", "ERROR"}:
+        elif status in {"DISABLED", "ERROR", "STALE"}:
             unmatched_status = status
         else:
             unmatched_status = "NONE"

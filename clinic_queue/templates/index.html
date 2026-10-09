@@ -246,8 +246,13 @@
                   <span>看診中（實驗）</span>
                   <span class="badge">{{ monitor_room.status }}</span>
                 </h3>
+                {% if monitor_room.status in ['ERROR', 'STALE'] %}
+                  <p class="empty visit-monitor-error" role="alert">
+                    {% if monitor_room.status == 'ERROR' %}VISIT 資料來源錯誤{% else %}VISIT 資料來源暫時失效，觀測已過期{% endif %}：{{ visit_monitor.source_health.error }}
+                  </p>
+                {% endif %}
                 {% if monitor_room.status == 'ERROR' %}
-                  <p class="empty visit-monitor-error" role="alert">VISIT 資料來源錯誤：{{ visit_monitor.source_health.error }}</p>
+                  <p class="empty">目前沒有可用的看診中（實驗）觀測</p>
                 {% elif monitor_room.candidates %}
                   {% for candidate in monitor_room.candidates %}
                     <article class="patient visit-candidate" data-visit-encounter-key="{{ candidate.encounter_key }}">
