@@ -7,7 +7,13 @@ from datetime import date
 from pathlib import Path
 
 
-def write_dbf(path: Path, fields: list[tuple[str, str, int]], rows: list[dict[str, object]]) -> Path:
+def write_dbf(
+    path: Path,
+    fields: list[tuple[str, str, int]],
+    rows: list[dict[str, object]],
+    *,
+    encoding: str = "cp950",
+) -> Path:
     """Write a small dBASE-compatible fixture for read-only adapter tests."""
     header_length = 32 + 32 * len(fields) + 1
     record_length = 1 + sum(width for _, _, width in fields)
@@ -40,7 +46,7 @@ def write_dbf(path: Path, fields: list[tuple[str, str, int]], rows: list[dict[st
                 text = value.strftime("%Y%m%d")
             else:
                 text = str(value)
-            encoded = text.encode("cp950")
+            encoded = text.encode(encoding)
             if len(encoded) > width:
                 raise ValueError(f"Fixture value for {name} exceeds its {width}-byte field")
             if kind in ("N", "F"):

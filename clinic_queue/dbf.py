@@ -11,6 +11,9 @@ from typing import BinaryIO, Iterable, Iterator
 
 logger = logging.getLogger("clinic_queue.dbf")
 
+_TEXT_FIELD_KINDS = frozenset({"C", "V", "Q", "M", "G", "P", "W"})
+_FALLBACK_ENCODINGS = ("utf-8", "big5hkscs", "gb18030")
+
 
 class DBFReadError(OSError):
     """Raised when a DBF header or physical record cannot be read safely."""
@@ -52,6 +55,26 @@ class DBFReader:
     def __init__(self, path: str | Path, encoding: str = "cp950") -> None:
         self.path = Path(path)
         self.encoding = encoding
+
+    def _decode_text(self, value_bytes: bytes) -> str:
+        """Decode text while recovering files whose code page is not declared reliably."""
+        decoded = value_bytes.decode(self.encoding, errors="replace")
+        replacement_count = decoded.count("\ufffd")
+        if replacement_count == 0:
+            return decoded
+
+        best = decoded
+        for encoding in _FALLBACK_ENCODINGS:
+            if encoding.casefold() == self.encoding.casefold():
+                continue
+            candidate = value_bytes.decode(encoding, errors="replace")
+            candidate_replacements = candidate.count("\ufffd")
+            if candidate_replacements < replacement_count:
+                best = candidate
+                replacement_count = candidate_replacements
+                if replacement_count == 0:
+                    break
+        return best
 
     def read_header(self) -> DBFHeader:
         try:
@@ -212,8 +235,10 @@ class DBFReader:
                 raise DBFReadError(
                     f"Incomplete DBF record {recno}: field {field.name} is truncated"
                 )
-            codec = self.encoding if field.kind in {"C", "V", "Q", "M", "G", "P", "W"} else "ascii"
-            raw_fields[field.name] = value_bytes.decode(codec, errors="replace")
+            if field.kind in _TEXT_FIELD_KINDS:
+                raw_fields[field.name] = self._decode_text(value_bytes)
+            else:
+                raw_fields[field.name] = value_bytes.decode("ascii", errors="replace")
         return DBFRecord(recno=recno, deleted=deleted_marker == b"*", raw_fields=raw_fields)
 
     def _parse_record(self, data: bytes, recno: int, header: DBFHeader) -> DBFRecord:
@@ -226,6 +251,8 @@ class DBFReader:
         for field in header.fields:
             start = field.offset
             value_bytes = data[start : start + field.width]
-            codec = self.encoding if field.kind in {"C", "V", "Q", "M", "G", "P", "W"} else "ascii"
-            raw_fields[field.name] = value_bytes.decode(codec, errors="replace")
+            if field.kind in _TEXT_FIELD_KINDS:
+                raw_fields[field.name] = self._decode_text(value_bytes)
+            else:
+                raw_fields[field.name] = value_bytes.decode("ascii", errors="replace")
         return DBFRecord(recno=recno, deleted=deleted, raw_fields=raw_fields)
