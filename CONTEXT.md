@@ -31,6 +31,12 @@ An active encounter that HIS classifies as waiting. `TREAT=C` remains outside th
 **就診狀態**:
 The HIS-derived visit states are 候診, 完成, and 已約未到. They are separate from local presence; the available HIS data does not identify a separate 已叫號 or 看診中 state.
 
+**看診中卡片**:
+A fixed, read-only room display of one eligible VISIT current-patient observation for the selected `TIME_KIND`. It is a presentation projection, not an official HIS-derived 就診狀態, queue member, or local presence state.
+
+**候診卡片暫隱**:
+A presentation condition in which a 候診中 card is omitted while a unique stable 看診中卡片 matches its normalized `NUM`, clinic date, room, and `TIME_KIND`. The underlying encounter and queue position remain unchanged and the card can reappear when valid evidence ends without HIS completion.
+
 **暫存 HIS 紀錄**:
 A record indicated by `TREAT=B` or `OVER=F`; it is not evidence that the patient has entered consultation.
 

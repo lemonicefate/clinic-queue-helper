@@ -70,4 +70,3 @@ def project_visit_monitor(
             encounter["display_position"] = display_position
 
     return projected_board, projected_monitor
-

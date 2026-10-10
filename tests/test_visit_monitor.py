@@ -245,6 +245,57 @@ def test_unique_current_patient_suppresses_all_matching_waiting_cards_only_in_sc
     assert payload["rooms"]["2"]["waiting"][0]["patient_no"] == "100001"
 
 
+def test_matching_num_in_another_time_kind_is_not_suppressed(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=False,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(
+        his_path / "RG011M1.DBF",
+        [
+            {
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "RELKEY": "RG-MORNING",
+                "SYS_2015": "SYS-MORNING",
+                "TIME_KIND": "1",
+            },
+            {
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "RELKEY": "RG-NOON",
+                "SYS_2015": "SYS-NOON",
+                "TIME_KIND": "2",
+            },
+        ],
+    )
+    write_visit_fixture(
+        his_path / "RG011M1_VISIT.DBF",
+        [
+            {
+                "SYS_2015": "SYS-MORNING",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            }
+        ],
+    )
+    app = create_app(load_config(config_path))
+
+    morning = asyncio.run(get_json(app, "/api/queue")).json()
+    noon = asyncio.run(get_json(app, "/api/queue", cookies={"clinic_session": "2"})).json()
+
+    assert morning["visit_monitor"]["suppressed_encounter_keys"] == ["relkey:RG-MORNING"]
+    assert morning["rooms"]["1"]["waiting"] == []
+    assert noon["visit_monitor"]["suppressed_encounter_keys"] == []
+    assert [entry["encounter_key"] for entry in noon["rooms"]["1"]["waiting"]] == [
+        "relkey:RG-NOON"
+    ]
+
+
 def test_suppression_follows_stale_ambiguity_switch_and_deletion_without_reordering(tmp_path):
     config_path, his_path = write_config(
         tmp_path,

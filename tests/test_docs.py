@@ -59,6 +59,7 @@ def test_visit_manual_validation_procedure_is_controlled_and_keeps_captures_outs
 
 def test_visit_card_domain_docs_record_the_superseding_decision():
     glossary = (PROJECT_ROOT / "GLOSSARY.md").read_text(encoding="utf-8")
+    context = (PROJECT_ROOT / "CONTEXT.md").read_text(encoding="utf-8")
     historical_adr = (PROJECT_ROOT / "docs" / "adr" / "0005-experimental-visit-current-patient-observation.md").read_text(
         encoding="utf-8"
     )
@@ -69,6 +70,8 @@ def test_visit_card_domain_docs_record_the_superseding_decision():
 
     assert "看診中卡片" in glossary
     assert "候診卡片暫隱" in glossary
+    assert "看診中卡片" in context
+    assert "候診卡片暫隱" in context
     assert "Status: superseded by ADR 0006" in historical_adr
     assert "Status: accepted" in accepted_adr
     assert "Default VISIT current-patient card" in accepted_adr

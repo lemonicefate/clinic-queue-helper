@@ -21,4 +21,3 @@ The primary card shows only patient identity. Source health, association, ambigu
 The board can temporarily omit a duplicate waiting card while preserving the encounter's underlying position. When valid evidence disappears without HIS completion, the card returns at that position; if HIS marks the encounter complete, normal reconciliation moves it to `完成`. A local away/present transition remains owned by QueueStore and the projection is recalculated over the resulting list.
 
 ADR 0005 remains in the history as the decision that preceded validation. This ADR supersedes its optional and experimental presentation, while retaining its source-safety, identity, stability, and read-only constraints.
-
