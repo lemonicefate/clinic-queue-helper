@@ -5,7 +5,6 @@
   "rg011m1_filename": "RG011M1.DBF",
   "rg011m1_visit_filename": "RG011M1_VISIT.DBF",
   "pd001m1_filename": "PD001M1.DBF",
-  "visit_monitor_enabled": false,
   "poll_interval_ms": 500,
   "browser_refresh_ms": 1000,
   "new_highlight_seconds": 300,

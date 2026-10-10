@@ -1844,7 +1844,7 @@ Give each `(room, TIME_KIND)` pair its own local candidate order. Derive room me
 23. As clinic staff, I want to keep marking 過號, so that local staff can organize follow-up without an automatic overdue algorithm.
 24. As clinic staff, I want HIS to remain responsible for actual calling, so that the local display cannot call a patient out of HIS order.
 25. As clinic staff, I want the local 下一位, 叫號, and 設為目前看診 controls removed, so that local actions cannot contradict HIS.
-26. As clinic staff, I want the app not to show 已叫號 or 看診中 without a reliable HIS signal, so that the displayed state remains evidence-based.
+26. As clinic staff, I want the app not to show 已叫號 or invent an official 看診中 visit state without a reliable HIS signal, so that the displayed state remains evidence-based. A separate read-only VISIT card may show a qualified observation.
 27. As staff at another browser, I want queue data changes to synchronize while my selected session remains independent, and refreshes to wait while I use the selector or edit a physician filter, so that shared updates do not interrupt my work or overwrite my view preference.
 28. As the clinic, I want the HIS files to remain read-only, so that this feature cannot alter the source system's data.
 
@@ -1862,7 +1862,7 @@ Give each `(room, TIME_KIND)` pair its own local candidate order. Derive room me
 - Maintain independent local order per `(room, TIME_KIND)`. New-encounter insertion, moving back from temporarily away, up/down moves, and drag-and-drop must affect only that order.
 - Derive room membership exclusively from `CCDOC` matching a room filter. Do not expose manual assignment or an assignment override. Keep records matching neither filter in an independent read-only area. When a filter change moves a waiting encounter into a room, append it to the destination queue tail and preserve unaffected ordering; retain its local presence and overdue state.
 - Keep shared room filters and application-owned presence, overdue, and reorder state in SQLite. These operations do not write to HIS or control HIS call order.
-- Remove local next, call, and set-current behavior. Do not display a separate called or in-consultation state because current HIS fields do not supply one.
+- Remove local next, call, and set-current behavior. Do not display a separate official called or in-consultation state because current HIS fields do not supply one. The read-only VISIT current-patient card is a display projection and does not change the official visit state.
 - Persist normalized `TIME_KIND` with the encounter state while retaining the raw HIS value. Treat missing/unsupported values as unknown. Unknown `TIME_KIND` takes precedence over the unmatched area and appears only in `診別未確認`; the latter is collapsed by default and shows a count, including zero during testing. Completed unmatched encounters remain read-only in the unmatched area.
 - Continue browser polling so shared queue changes appear within the existing synchronization target; session preference remains local to each browser. Polling must not interrupt interaction with the selector or physician filters.
 
@@ -1882,7 +1882,7 @@ Give each `(room, TIME_KIND)` pair its own local candidate order. Derive room me
 - Manual date selection.
 - Automatic session inference from time-of-day; this may be added later behind a future configuration if requested.
 - App-initiated calls, 下一位, manual 叫號, or manual current-consultation state.
-- A distinct 已叫號 or 看診中 category until HIS exposes a reliable field/value for it.
+- A distinct official 已叫號 or 看診中 category until HIS exposes a reliable field/value for it. The read-only VISIT current-patient card is specified in the follow-up below.
 - Writing local queue, room, presence, overdue, or ordering state back to HIS.
 - Automatic cross-room balancing or automatic queue optimization.
 
@@ -1894,3 +1894,40 @@ Give each `(room, TIME_KIND)` pair its own local candidate order. Derive room me
 - Local order is for organizing the displayed candidate list. HIS continues to determine who is actually called.
 - Published for implementation as [GitHub issue #7](https://github.com/lemonicefate/clinic-queue-helper/issues/7) with the `ready-for-agent` label.
 - Shared CCDOC room-filter behavior supersedes the static mapping and manual assignment requirements in issue #7; its follow-up is tracked in [GitHub issue #11](https://github.com/lemonicefate/clinic-queue-helper/issues/11).
+
+---
+
+# Follow-up: Default VISIT current-patient card
+
+The validated `RG011M1_VISIT.DBF` observation is a default, read-only display
+projection above each visible room's `候診中` list. It is not an official
+HIS-derived `就診狀態`, does not create an application-owned current state, and
+does not call, complete, assign, reorder, or change presence for an encounter.
+
+The monitor always initializes and polls. `rg011m1_visit_filename` remains
+configurable and defaults to `RG011M1_VISIT.DBF`; a legacy
+`visit_monitor_enabled` setting is accepted and ignored. A complete startup
+baseline projects eligible current state without replaying an event. New or
+changed physical VISIT rows require two identical complete reads. Initial
+source failure is `ERROR`; a later failure is `STALE` and keeps the last valid
+card; `AMBIGUOUS` and `NONE` select no patient. The source remains read-only,
+and raw VISIT records or patient snapshots are never persisted.
+
+A unique stable candidate can temporarily suppress every matching waiting card
+with the same normalized `NUM`, clinic date, room, and `TIME_KIND`. NUM is used
+for this presentation rule only; VISIT encounter association continues to use
+exact `SYS_2015` or a unique `NUM` + `CCDOC` + date + `TIME_KIND` match. The
+suppression applies only to `候診中` entries. `已掛暫離`, `已約未到`, `完成`,
+unmatched, invalid, and `診別未確認` groups remain visible. The projection
+leaves QueueStore rows and `queue_position` values unchanged, adds visible
+display numbering after filtering, and reports suppressed encounter keys in
+the independent `visit_monitor` projection.
+
+GET queue responses, the rendered board, and room-code, presence, overdue, and
+reorder responses expose the same filtered board and monitor projection. The
+diagnostic area is collapsed by default with a count and retains source-health,
+unmatched, ambiguity, deletion, and association reasons. The primary card
+shows only patient identity and has no mutation controls. Manual validation
+uses only synthetic, de-identified, or clinic-approved sandbox data; real PHI,
+raw DBF files, screenshots, logs, and production snapshots stay outside the
+repository and issue tracker.

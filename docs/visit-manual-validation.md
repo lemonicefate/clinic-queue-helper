@@ -1,9 +1,9 @@
-# VISIT PoC controlled manual validation
+# VISIT current-patient card controlled manual validation
 
-This procedure is for a clinic-approved, read-only comparison of the optional
-VISIT monitor with the original HIS waiting-room display. It is evidence
-collection for the PoC, not a production rollout and not a definition of a
-confirmed 看診中 state.
+This procedure is for a clinic-approved, read-only comparison of the default
+VISIT current-patient card with the original HIS waiting-room display. It keeps
+the evidence needed to validate source health and patient matching; the card is
+not an official HIS-derived 看診中 state.
 
 ## Safety and setup
 
@@ -11,13 +11,12 @@ Use only a synthetic, de-identified, or HIS sandbox test encounter. Do not use
 real patient data or real PHI. If the available HIS cannot provide a safe test
 encounter, stop the procedure rather than substituting a real patient.
 
-Run the application from the controlled test worktree with
-`visit_monitor_enabled=true`, a read-only VISIT source, and application-owned
-SQLite and log paths outside the HIS data directory. Keep the ordinary queue
-and the HIS source read-only from the application's perspective. Before
-starting, confirm that the VISIT monitor is the separate `看診中（實驗）`
-surface and that it has no call, current-patient, completion, assignment,
-presence, overdue, or reorder control.
+Run the application from the controlled test worktree with a read-only VISIT
+source and application-owned SQLite and log paths outside the HIS data
+directory. Keep the ordinary queue and the HIS source read-only from the
+application's perspective. Before starting, confirm that each room has the
+fixed `看診中` card above `候診中` and that it has no call, completion,
+assignment, presence, overdue, or reorder control.
 
 All raw captures must stay in a clinic-approved, access-controlled location
 outside this repository and outside Git, GitHub, CI, the issue tracker, issue
@@ -37,13 +36,12 @@ logs into it.
    record count, header/layout metadata, and a read-only baseline copy in the
    approved external capture location. Save any screenshot or API response
    there too.
-3. Start or restart the test application. Confirm that rows already present
-   at startup establish a baseline and do not appear as newly observed
-   candidates. Confirm the ordinary queue membership, order, presence, and
-   overdue values are unchanged.
+3. Start or restart the test application. Confirm that rows already present at
+   startup project eligible stable current state without replaying a new event
+   or changing ordinary queue membership, order, presence, or overdue values.
 4. Record the monitor API status and the rendered per-room/session status.
-   Valid PoC labels are `NONE`, `UNKNOWN`, `AMBIGUOUS`, `STALE`, and `ERROR`;
-   the PoC must never emit `ACTIVE`.
+   Valid evidence labels are `NONE`, `UNKNOWN`, `AMBIGUOUS`, `STALE`, and
+   `ERROR`; the card must never emit `ACTIVE`.
 
 ## Call and completion/deletion
 
@@ -59,7 +57,7 @@ logs into it.
    original-display result externally, including whether the VISIT row was
    logically deleted or changed in another way. After two stable reads, verify
    that deletion removes only that evidence and is not reported as `完成` or
-   `ACTIVE` by the PoC.
+   `ACTIVE` by the card.
 4. Compare the ordinary queue before and after the call/completion sequence.
    Any queue, order, presence, overdue, room-filter, or HIS-source mutation is
    a failed safety result and must be recorded without attempting a local fix.
@@ -88,7 +86,7 @@ detail page.
 
 Use a safe test encounter that is already HIS-derived `完成`, then open its
 completed detail page. If the HIS creates a VISIT row, verify that an exact
-encounter association is excluded from the experimental candidate list. The
+encounter association is excluded from the current-patient candidate list. The
 diagnostic reason may be recorded in the redacted summary, but the raw row,
 patient identity, screenshot, and log remain outside the repository and issue
 tracker. A later encounter sharing the same patient number must be tested
@@ -131,7 +129,7 @@ agree with the original HIS display:
 - whether the original HIS display and VISIT source settle at different times.
 
 Do not turn any of these assumptions into an `ACTIVE` inference rule from one
-manual run or from synthetic tests alone. End the run by disabling the monitor
-again, preserving only the redacted summary in the worktree, and keeping all
-raw patient data, DBF files, screenshots, logs, and snapshots in the approved
-external location under the clinic's retention policy.
+manual run or from synthetic tests alone. End the run by restoring the approved
+synthetic source and preserving only the redacted summary in the worktree;
+keep all raw patient data, DBF files, screenshots, logs, and snapshots in the
+approved external location under the clinic's retention policy.

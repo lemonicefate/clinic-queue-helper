@@ -411,12 +411,14 @@ class VisitMonitor:
                 candidate_status = "UNKNOWN" if len(group) == 1 else "AMBIGUOUS"
                 for candidate in group:
                     candidate["status"] = candidate_status
-                if candidate_status == "AMBIGUOUS":
+                group_time_kind = group[0]["time_kind"]
+                if candidate_status == "AMBIGUOUS" and (
+                    time_filter is None or group_time_kind == int(time_filter)
+                ):
                     doctor_code = group[0]["doctor_code"]
-                    time_kind = group[0]["time_kind"]
                     reason = (
                         f"VISIT evidence is ambiguous for CCDOC {doctor_code!r} "
-                        f"and TIME_KIND {time_kind}"
+                        f"and TIME_KIND {group_time_kind}"
                     )
                     for candidate in group:
                         for locator in candidate["record_locators"]:

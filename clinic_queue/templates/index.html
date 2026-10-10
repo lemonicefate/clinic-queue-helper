@@ -305,9 +305,8 @@
               <div class="patient-main">
                 <div class="patient-identity">
                   <strong>#{{ candidate.patient_no }} {{ candidate.patient_name }}</strong>
-                  <div class="patient-badges"><span class="badge">{{ candidate.status }}</span></div>
                 </div>
-                <span class="secondary">病歷號 {{ candidate.patient_no }}</span>
+                <span class="secondary">病歷號 {{ candidate.patient_no }} · 證據狀態 {{ candidate.status }}</span>
               </div>
               <span class="secondary">醫師 {{ candidate.doctor_code }} · {{ candidate.clinic_session }} · {{ candidate.evidence_reason }}</span>
             </article>
