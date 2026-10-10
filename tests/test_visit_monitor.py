@@ -245,6 +245,280 @@ def test_unique_current_patient_suppresses_all_matching_waiting_cards_only_in_sc
     assert payload["rooms"]["2"]["waiting"][0]["patient_no"] == "100001"
 
 
+def test_suppression_follows_stale_ambiguity_switch_and_deletion_without_reordering(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=False,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(
+        his_path / "RG011M1.DBF",
+        [
+            {"NUM": "100001", "CCDOC": "DOC1", "RELKEY": "RG-001", "SYS_2015": "SYS-001"},
+            {"NUM": "100002", "CCDOC": "DOC1", "RELKEY": "RG-002", "SYS_2015": "SYS-002"},
+        ],
+    )
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "SYS-001",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            }
+        ],
+    )
+    app = create_app(load_config(config_path))
+
+    initial = asyncio.run(get_json(app, "/api/queue")).json()
+    assert [entry["encounter_key"] for entry in initial["rooms"]["1"]["waiting"]] == [
+        "relkey:RG-002"
+    ]
+    initial_positions = {
+        entry["encounter_key"]: entry["queue_position"]
+        for entry in app.state.queue_store.get_board(1)["rooms"][1]["waiting"]
+    }
+    assert initial["visit_monitor"]["suppressed_encounter_keys"] == ["relkey:RG-001"]
+
+    visit_path.unlink()
+    app.state.visit_monitor.poll_once()
+    stale = asyncio.run(get_json(app, "/api/queue")).json()
+    assert stale["visit_monitor"]["status"] == "STALE"
+    assert stale["visit_monitor"]["suppressed_encounter_keys"] == ["relkey:RG-001"]
+    assert [entry["encounter_key"] for entry in stale["rooms"]["1"]["waiting"]] == [
+        "relkey:RG-002"
+    ]
+
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "SYS-001",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            },
+            {
+                "SYS_2015": "SYS-002",
+                "NUM": "100002",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090001",
+            },
+        ],
+    )
+    app.state.visit_monitor.poll_once()
+    ambiguous_pending = asyncio.run(get_json(app, "/api/queue")).json()
+    assert ambiguous_pending["visit_monitor"]["status"] == "STALE"
+    app.state.visit_monitor.poll_once()
+    ambiguous = asyncio.run(get_json(app, "/api/queue")).json()
+    assert ambiguous["visit_monitor"]["status"] == "AMBIGUOUS"
+    assert ambiguous["visit_monitor"]["suppressed_encounter_keys"] == []
+    assert [entry["encounter_key"] for entry in ambiguous["rooms"]["1"]["waiting"]] == [
+        "relkey:RG-001",
+        "relkey:RG-002",
+    ]
+
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "SYS-002",
+                "NUM": "100002",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090001",
+            }
+        ],
+    )
+    app.state.visit_monitor.poll_once()
+    app.state.visit_monitor.poll_once()
+    switched = asyncio.run(get_json(app, "/api/queue")).json()
+    assert switched["visit_monitor"]["status"] == "UNKNOWN"
+    assert switched["visit_monitor"]["suppressed_encounter_keys"] == ["relkey:RG-002"]
+    assert [entry["encounter_key"] for entry in switched["rooms"]["1"]["waiting"]] == [
+        "relkey:RG-001"
+    ]
+
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "SYS-002",
+                "NUM": "100002",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090001",
+                "_DELETED": True,
+            }
+        ],
+    )
+    app.state.visit_monitor.poll_once()
+    app.state.visit_monitor.poll_once()
+    deleted = asyncio.run(get_json(app, "/api/queue")).json()
+    assert deleted["visit_monitor"]["suppressed_encounter_keys"] == []
+    assert [entry["encounter_key"] for entry in deleted["rooms"]["1"]["waiting"]] == [
+        "relkey:RG-001",
+        "relkey:RG-002",
+    ]
+    assert {
+        entry["encounter_key"]: entry["queue_position"]
+        for entry in app.state.queue_store.get_board(1)["rooms"][1]["waiting"]
+    } == initial_positions
+
+
+def test_suppressed_waiting_encounter_moves_away_returns_and_completion_stays_his_owned(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=False,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(
+        his_path / "RG011M1.DBF",
+        [
+            {"NUM": "100001", "CCDOC": "DOC1", "RELKEY": "RG-001", "SYS_2015": "SYS-001"},
+            {"NUM": "100002", "CCDOC": "DOC1", "RELKEY": "RG-002", "SYS_2015": "SYS-002"},
+        ],
+    )
+    visit_path = his_path / "RG011M1_VISIT.DBF"
+    write_visit_fixture(
+        visit_path,
+        [
+            {
+                "SYS_2015": "SYS-001",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            }
+        ],
+    )
+    app = create_app(load_config(config_path))
+
+    async def change_presence(action):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/action",
+                json={"encounter_key": "relkey:RG-001", "action": action},
+            )
+
+    away = asyncio.run(change_presence("away"))
+    assert away.status_code == 200
+    away_payload = away.json()
+    assert [entry["encounter_key"] for entry in away_payload["rooms"]["1"]["away"]] == [
+        "relkey:RG-001"
+    ]
+    assert away_payload["visit_monitor"]["suppressed_encounter_keys"] == []
+
+    present = asyncio.run(change_presence("present"))
+    assert present.status_code == 200
+    present_payload = present.json()
+    assert [entry["encounter_key"] for entry in present_payload["rooms"]["1"]["waiting"]] == [
+        "relkey:RG-002"
+    ]
+    assert present_payload["visit_monitor"]["suppressed_encounter_keys"] == ["relkey:RG-001"]
+
+    write_rg_fixture(
+        his_path / "RG011M1.DBF",
+        [
+            {"NUM": "100001", "CCDOC": "DOC1", "RELKEY": "RG-001", "SYS_2015": "SYS-001", "OVER": "T"},
+            {"NUM": "100002", "CCDOC": "DOC1", "RELKEY": "RG-002", "SYS_2015": "SYS-002"},
+        ],
+    )
+    app.state.his_poller.poll_once()
+    completed = asyncio.run(get_json(app, "/api/queue")).json()
+    assert completed["visit_monitor"]["suppressed_encounter_keys"] == []
+    assert "relkey:RG-001" not in {
+        entry["encounter_key"] for entry in completed["rooms"]["1"]["waiting"]
+    }
+    assert "relkey:RG-001" in {
+        entry["encounter_key"] for entry in completed["completed"]
+    }
+
+
+def test_queue_page_and_all_queue_mutations_share_the_filtered_visit_projection(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=False,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(
+        his_path / "RG011M1.DBF",
+        [
+            {"NUM": "100001", "CCDOC": "DOC1", "RELKEY": "RG-001", "SYS_2015": "SYS-001"},
+            {"NUM": "100002", "CCDOC": "DOC1", "RELKEY": "RG-002", "SYS_2015": "SYS-002"},
+        ],
+    )
+    write_visit_fixture(
+        his_path / "RG011M1_VISIT.DBF",
+        [
+            {
+                "SYS_2015": "SYS-001",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            }
+        ],
+    )
+    app = create_app(load_config(config_path))
+
+    async def exercise_endpoints():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await asyncio.gather(
+                client.get("/api/queue"),
+                client.get("/api/visit-monitor"),
+                client.get("/"),
+                client.post(
+                    "/api/action",
+                    json={
+                        "encounter_key": "relkey:RG-002",
+                        "action": "overdue",
+                        "value": True,
+                    },
+                ),
+                client.post(
+                    "/api/reorder",
+                    json={"encounter_key": "relkey:RG-002", "position": 1},
+                ),
+                client.post(
+                    "/api/room-doctor-code",
+                    json={"room_id": 1, "doctor_code": "DOC1"},
+                ),
+            )
+
+    queue, monitor, page, action, reorder, room_code = asyncio.run(exercise_endpoints())
+    assert all(response.status_code == 200 for response in (queue, monitor, page, action, reorder, room_code))
+
+    queue_payload = queue.json()
+    expected_keys = ["relkey:RG-001"]
+    assert [entry["encounter_key"] for entry in queue_payload["rooms"]["1"]["waiting"]] == [
+        "relkey:RG-002"
+    ]
+    assert monitor.json()["suppressed_encounter_keys"] == ["relkey:RG-001"]
+    for response in (action, reorder, room_code):
+        payload = response.json()
+        assert payload["visit_monitor"]["suppressed_encounter_keys"] == expected_keys
+        assert [entry["encounter_key"] for entry in payload["rooms"]["1"]["waiting"]] == [
+            "relkey:RG-002"
+        ]
+    assert 'data-encounter-key="relkey:RG-001"' not in page.text
+    assert 'data-visit-encounter-key="relkey:RG-001"' in page.text
+
+
 def test_visit_source_failure_preserves_ordinary_queue_and_rendered_patients(tmp_path):
     app, visit_path = _make_candidate_app(tmp_path)
     before = asyncio.run(get_json(app, "/api/queue")).json()
