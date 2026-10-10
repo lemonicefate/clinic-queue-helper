@@ -47,7 +47,7 @@ class HISPoller:
         self.storage_error: str | None = None
 
     def attach_visit_monitor(self, monitor: VisitMonitor) -> None:
-        """Run the optional VISIT observer after each successful HIS poll."""
+        """Run the read-only VISIT observer after each successful HIS poll."""
         self.visit_monitor = monitor
 
     def encounter_snapshot(self) -> tuple[EncounterSnapshot, ...]:
@@ -55,7 +55,7 @@ class HISPoller:
         return self._encounter_snapshot
 
     def _poll_visit_monitor(self) -> None:
-        if self.visit_monitor is None or not self.visit_monitor.enabled:
+        if self.visit_monitor is None:
             return
         self.visit_monitor.set_encounters(self._encounter_snapshot)
         self.visit_monitor.poll_once()

@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from clinic_queue.app import create_app
-from clinic_queue.config import ConfigurationError, load_config
+from clinic_queue.config import load_config
 from tests.dbf_fixtures import write_dbf
 
 
@@ -141,6 +141,110 @@ def test_visit_monitor_api_and_ui_never_emit_active_or_mutation_controls(tmp_pat
     assert_visit_surface_is_read_only(api_payload, page_response.text)
 
 
+def test_visit_monitor_is_always_on_and_projects_a_stable_startup_card(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=False,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(his_path / "RG011M1.DBF", [("RG-001", "100001", "DOC1", "1510070001")])
+    write_visit_fixture(
+        his_path / "RG011M1_VISIT.DBF",
+        [
+            {
+                "SYS_2015": "SYS-001",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            }
+        ],
+    )
+
+    app = create_app(load_config(config_path))
+    payload = asyncio.run(get_json(app, "/api/queue")).json()
+    page = asyncio.run(get_json(app, "/")).text
+
+    monitor = payload["visit_monitor"]
+    assert "enabled" not in monitor
+    assert monitor["status"] == "UNKNOWN"
+    assert monitor["rooms"]["1"]["status"] == "UNKNOWN"
+    assert monitor["rooms"]["1"]["candidates"][0]["patient_no"] == "100001"
+    assert "看診中" in page
+    assert "看診中（實驗）" not in page
+
+
+def test_unique_current_patient_suppresses_all_matching_waiting_cards_only_in_scope(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=False,
+        doctor_room_map={"DOC1": 1, "DOC2": 2},
+    )
+    write_rg_fixture(
+        his_path / "RG011M1.DBF",
+        [
+            {
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "RELKEY": "RG-001",
+                "SYS_2015": "SYS-001",
+            },
+            {
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "RELKEY": "RG-002",
+                "SYS_2015": "SYS-002",
+            },
+            {
+                "NUM": "100002",
+                "CCDOC": "DOC1",
+                "RELKEY": "RG-003",
+                "SYS_2015": "SYS-003",
+            },
+            {
+                "NUM": "100001",
+                "CCDOC": "DOC2",
+                "RELKEY": "RG-004",
+                "SYS_2015": "SYS-004",
+            },
+        ],
+    )
+    write_visit_fixture(
+        his_path / "RG011M1_VISIT.DBF",
+        [
+            {
+                "SYS_2015": "SYS-001",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            }
+        ],
+    )
+
+    app = create_app(load_config(config_path))
+    payload = asyncio.run(get_json(app, "/api/queue")).json()
+    waiting = payload["rooms"]["1"]["waiting"]
+    raw_waiting = app.state.queue_store.get_board(1)["rooms"][1]["waiting"]
+
+    assert [entry["patient_no"] for entry in waiting] == ["100002"]
+    assert [entry["queue_position"] for entry in waiting] == [3]
+    assert [entry["display_position"] for entry in waiting] == [1]
+    assert {entry["encounter_key"] for entry in raw_waiting} == {
+        "relkey:RG-001",
+        "relkey:RG-002",
+        "relkey:RG-003",
+    }
+    assert [entry["queue_position"] for entry in raw_waiting] == [1, 2, 3]
+    assert set(payload["visit_monitor"]["suppressed_encounter_keys"]) == {
+        "relkey:RG-001",
+        "relkey:RG-002",
+    }
+    assert payload["rooms"]["2"]["waiting"][0]["patient_no"] == "100001"
+
+
 def test_visit_source_failure_preserves_ordinary_queue_and_rendered_patients(tmp_path):
     app, visit_path = _make_candidate_app(tmp_path)
     before = asyncio.run(get_json(app, "/api/queue")).json()
@@ -165,8 +269,9 @@ def test_visit_source_failure_preserves_ordinary_queue_and_rendered_patients(tmp
     }
     assert after["visit_monitor"]["status"] == "STALE"
     assert "#100001" in page_response.text
-    assert after["rooms"]["1"]["waiting"][0]["patient_no"] == "100001"
-    assert 'data-encounter-key="relkey:RG-001"' in page_response.text
+    assert after["rooms"]["1"]["waiting"] == []
+    assert app.state.queue_store.get_board(1)["rooms"][1]["waiting"][0]["patient_no"] == "100001"
+    assert 'data-visit-encounter-key="relkey:RG-001"' in page_response.text
     assert "VISIT 資料來源暫時失效" in page_response.text
     assert_visit_surface_is_read_only(after["visit_monitor"], page_response.text)
 
@@ -381,18 +486,17 @@ def test_visit_without_a_unique_current_encounter_stays_diagnostic(tmp_path):
     ]
 
 
-def test_visit_monitor_is_disabled_by_default_and_uses_configurable_source(tmp_path):
+def test_visit_monitor_is_always_on_and_uses_configurable_source(tmp_path):
     config_path, _ = write_config(tmp_path)
 
     config = load_config(config_path)
 
-    assert config.visit_monitor_enabled is False
     assert config.rg011m1_visit_filename == "RG011M1_VISIT.DBF"
     assert config.visit_filename == "RG011M1_VISIT.DBF"
 
 
 @pytest.mark.parametrize("value", [None, "true", 1, []])
-def test_visit_monitor_enabled_must_be_boolean(tmp_path, value):
+def test_legacy_visit_monitor_setting_is_ignored(tmp_path, value):
     config_path, _ = write_config(tmp_path)
     settings = json.loads(config_path.read_text(encoding="utf-8"))
     if value is None:
@@ -401,11 +505,10 @@ def test_visit_monitor_enabled_must_be_boolean(tmp_path, value):
         settings["visit_monitor_enabled"] = value
     config_path.write_text(json.dumps(settings), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="visit_monitor_enabled"):
-        load_config(config_path)
+    load_config(config_path)
 
 
-def test_disabled_visit_monitor_does_not_read_or_render_visit_source(tmp_path):
+def test_legacy_disabled_setting_does_not_disable_or_hide_visit_source(tmp_path):
     config_path, his_path = write_config(tmp_path)
     write_rg_fixture(his_path / "RG011M1.DBF", [])
     config = load_config(config_path)
@@ -416,19 +519,17 @@ def test_disabled_visit_monitor_does_not_read_or_render_visit_source(tmp_path):
 
     assert api_response.status_code == 200
     payload = api_response.json()
-    assert payload["enabled"] is False
-    assert payload["status"] == "DISABLED"
-    assert payload["source_health"]["status"] == "DISABLED"
+    assert "enabled" not in payload
+    assert payload["status"] == "ERROR"
+    assert payload["source_health"]["status"] == "ERROR"
     assert payload["source_health"]["baseline_established"] is False
     assert payload["source_health"]["record_count"] == 0
-    assert payload["source_health"]["error"] is None
+    assert payload["source_health"]["error"]
     assert payload["baseline"] == {"established": False, "record_count": 0}
-    assert payload["rooms"] == {
-        "1": {"status": "DISABLED", "candidates": []},
-        "2": {"status": "DISABLED", "candidates": []},
-    }
-    assert payload["unmatched"] == {"status": "DISABLED", "candidates": []}
+    assert all(room["status"] == "ERROR" for room in payload["rooms"].values())
+    assert payload["unmatched"] == {"status": "ERROR", "candidates": []}
     assert page_response.status_code == 200
+    assert "看診中" in page_response.text
     assert "看診中（實驗）" not in page_response.text
 
 
@@ -460,14 +561,15 @@ def test_enabled_visit_monitor_baselines_existing_rows_without_replay(tmp_path):
     payload = response.json()
 
     assert response.status_code == 200
-    assert payload["enabled"] is True
-    assert payload["status"] == "NONE"
+    assert "enabled" not in payload
+    assert payload["status"] == "UNKNOWN"
     assert payload["source_health"]["status"] == "OK"
     assert payload["source_health"]["baseline_established"] is True
     assert payload["source_health"]["record_count"] == 1
     assert payload["source_health"]["filename"] == "CONTROLLED_VISIT.DBF"
     assert payload["baseline"] == {"established": True, "record_count": 1}
-    assert payload["rooms"]["1"] == {"status": "NONE", "candidates": []}
+    assert payload["rooms"]["1"]["status"] == "UNKNOWN"
+    assert payload["rooms"]["1"]["candidates"][0]["patient_no"] == "100001"
     assert payload["rooms"]["2"] == {"status": "NONE", "candidates": []}
     assert payload["unmatched"] == {"status": "NONE", "candidates": []}
     assert (his_path / "CONTROLLED_VISIT.DBF").read_bytes() == source_before
@@ -483,7 +585,7 @@ def test_enabled_visit_monitor_reports_source_error_without_fabricating_empty_st
     page_response = asyncio.run(get_json(app, "/"))
 
     assert response.status_code == 200
-    assert payload["enabled"] is True
+    assert "enabled" not in payload
     assert payload["status"] == "ERROR"
     assert payload["source_health"]["status"] == "ERROR"
     assert payload["source_health"]["baseline_established"] is False
@@ -491,7 +593,8 @@ def test_enabled_visit_monitor_reports_source_error_without_fabricating_empty_st
     assert all(room["status"] == "ERROR" for room in payload["rooms"].values())
     assert payload["unmatched"] == {"status": "ERROR", "candidates": []}
     assert page_response.status_code == 200
-    assert "看診中（實驗）" in page_response.text
+    assert "看診中" in page_response.text
+    assert "看診中（實驗）" not in page_response.text
     assert "VISIT 資料來源錯誤" in page_response.text
     monitor_area = re.search(
         r'<section class="visit-monitor"[^>]*>.*?</section>',
@@ -570,6 +673,7 @@ def test_stable_appended_visit_record_becomes_unknown_candidate_after_two_reads(
             "doctor_code": "DOC1",
             "time_kind": 1,
             "clinic_session": "早診",
+            "visit_date": date.today().isoformat(),
             "evidence_reason": "unique NUM+CCDOC+date+TIME_KIND fallback",
             "evidence_count": 1,
             "record_locators": [
@@ -714,6 +818,7 @@ def test_repeated_valid_visit_evidence_coalesces_and_retains_all_locators(tmp_pa
             "doctor_code": "DOC1",
             "time_kind": 1,
             "clinic_session": "早診",
+            "visit_date": date.today().isoformat(),
             "evidence_reason": "exact SYS_2015 association",
             "evidence_count": 2,
             "record_locators": [
@@ -924,7 +1029,7 @@ def test_visit_unmatched_and_diagnostics_render_in_separate_read_only_section(tm
 
     page_response = asyncio.run(get_json(app, "/"))
     visit_diagnostics = re.search(
-        r'<section class="visit-monitor-diagnostics"[^>]*>.*?</section>',
+        r'<details class="visit-monitor-diagnostics"[^>]*>.*?</details>',
         page_response.text,
         flags=re.DOTALL,
     )
@@ -1365,7 +1470,7 @@ def test_changing_visit_bytes_reset_stability_until_two_identical_reads(tmp_path
     )
     app.state.visit_monitor.poll_once()
     pending_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
-    assert pending_payload["rooms"]["1"]["candidates"] == []
+    assert pending_payload["rooms"]["1"]["candidates"][0]["status"] == "UNKNOWN"
     assert pending_payload["pending"][0]["consecutive_reads"] == 1
 
     app.state.visit_monitor.poll_once()
@@ -1529,7 +1634,7 @@ def test_his_poller_rebuilds_visit_baseline_after_layout_change_without_record_r
     second_payload = asyncio.run(get_json(app, "/api/visit-monitor")).json()
     assert second_payload["source_health"]["status"] == "OK"
     assert second_payload["baseline"]["record_count"] == 1
-    assert second_payload["rooms"]["1"]["candidates"] == []
+    assert second_payload["rooms"]["1"]["candidates"]
 
 
 @pytest.mark.parametrize("interruption", ["incomplete", "failed"])
@@ -1575,7 +1680,7 @@ def test_replacement_baseline_restarts_after_interrupted_read(tmp_path, interrup
     recovered_twice = asyncio.run(get_json(app, "/api/visit-monitor")).json()
     assert recovered_twice["source_health"]["status"] == "OK"
     assert recovered_twice["baseline"]["record_count"] == 1
-    assert recovered_twice["rooms"]["1"]["candidates"] == []
+    assert recovered_twice["rooms"]["1"]["candidates"]
 
 
 def test_stable_logical_deletion_removes_only_deleted_evidence(tmp_path):
@@ -1748,6 +1853,6 @@ def test_restart_rebuilds_visit_baseline_without_replaying_existing_rows(tmp_pat
     restarted_app = create_app(first_app.state.config)
     restarted_payload = asyncio.run(get_json(restarted_app, "/api/visit-monitor")).json()
 
-    assert restarted_payload["status"] == "NONE"
+    assert restarted_payload["status"] == "UNKNOWN"
     assert restarted_payload["baseline"]["record_count"] == 1
-    assert restarted_payload["rooms"]["1"]["candidates"] == []
+    assert restarted_payload["rooms"]["1"]["candidates"]

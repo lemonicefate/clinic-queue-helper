@@ -1,4 +1,4 @@
-"""Read-only polling and projection for the experimental VISIT source."""
+"""Read-only polling and projection for the VISIT current-patient card."""
 
 from __future__ import annotations
 
@@ -53,9 +53,8 @@ class VisitMonitor:
         room_map_provider: Callable[[], Mapping[str, int]] | None = None,
     ) -> None:
         self.config = config
-        self.enabled = config.visit_monitor_enabled
         self.source_path = config.his_data_path / config.rg011m1_visit_filename
-        self.source_status = "DISABLED" if not self.enabled else "ERROR"
+        self.source_status = "ERROR"
         self.source_error: str | None = None
         self._lock = RLock()
         self.baseline_established = False
@@ -82,9 +81,6 @@ class VisitMonitor:
 
     def initialize(self) -> None:
         """Read all visible rows as baseline data, never as events."""
-        if not self.enabled:
-            return
-
         with self._lock:
             self._initialize()
 
@@ -101,7 +97,10 @@ class VisitMonitor:
             return
 
         self._baseline_records = {record.recno: record for record in records}
-        self._accepted_records.clear()
+        # A complete source read at startup is already stable enough to
+        # project current state.  It is a baseline, so it does not replay a
+        # VISIT event or mutate queue-owned state.
+        self._accepted_records = dict(self._baseline_records)
         self._pending_records.clear()
         self._unreadable_records.clear()
         self._diagnostics.clear()
@@ -167,9 +166,6 @@ class VisitMonitor:
 
     def poll_once(self) -> None:
         """Accept only stable changed records and refresh read-only evidence."""
-        if not self.enabled:
-            return
-
         with self._lock:
             self._poll_once()
 
@@ -211,7 +207,10 @@ class VisitMonitor:
                 return
 
             self._baseline_records = {record.recno: record for record in records}
-            self._accepted_records.clear()
+            # A replacement source becomes the current baseline after two
+            # identical complete reads.  Project that stable snapshot without
+            # treating it as a new event.
+            self._accepted_records = dict(self._baseline_records)
             self._pending_records.clear()
             self._unreadable_records.clear()
             self._diagnostics.clear()
@@ -335,6 +334,7 @@ class VisitMonitor:
             "doctor_code": doctor_code,
             "time_kind": int(time_kind),
             "clinic_session": time_kind.label,
+            "visit_date": encounter.visit_date.isoformat(),
             "evidence_reason": association.reason,
             "evidence_count": 1,
             "record_locators": [
@@ -373,11 +373,8 @@ class VisitMonitor:
             return self._response(selected_time_kind=selected_time_kind)
 
     def _response(self, *, selected_time_kind: int | None = None) -> dict:
-        if not self.enabled:
-            status = "DISABLED"
-            room_candidates = {1: [], 2: []}
-            unmatched_candidates: list[dict] = []
-        elif self.source_status == "ERROR":
+        ambiguity_diagnostics: list[dict[str, object]] = []
+        if self.source_status == "ERROR":
             status = "ERROR"
             room_candidates = {1: [], 2: []}
             unmatched_candidates = []
@@ -414,6 +411,21 @@ class VisitMonitor:
                 candidate_status = "UNKNOWN" if len(group) == 1 else "AMBIGUOUS"
                 for candidate in group:
                     candidate["status"] = candidate_status
+                if candidate_status == "AMBIGUOUS":
+                    doctor_code = group[0]["doctor_code"]
+                    time_kind = group[0]["time_kind"]
+                    reason = (
+                        f"VISIT evidence is ambiguous for CCDOC {doctor_code!r} "
+                        f"and TIME_KIND {time_kind}"
+                    )
+                    for candidate in group:
+                        for locator in candidate["record_locators"]:
+                            ambiguity_diagnostics.append(
+                                {
+                                    "record_number": int(locator["record_number"]),
+                                    "reason": reason,
+                                }
+                            )
 
             projected_candidates = sorted(
                 candidates_by_identity.values(),
@@ -469,7 +481,7 @@ class VisitMonitor:
                     if any(candidate["status"] == "AMBIGUOUS" for candidate in candidates)
                     else "UNKNOWN"
                 )
-            elif status in {"DISABLED", "ERROR", "STALE"}:
+            elif status in {"ERROR", "STALE"}:
                 room_status = status
             else:
                 room_status = "NONE"
@@ -485,7 +497,7 @@ class VisitMonitor:
                 if any(candidate["status"] == "AMBIGUOUS" for candidate in unmatched_candidates)
                 else "UNKNOWN"
             )
-        elif status in {"DISABLED", "ERROR", "STALE"}:
+        elif status in {"ERROR", "STALE"}:
             unmatched_status = status
         else:
             unmatched_status = "NONE"
@@ -516,8 +528,18 @@ class VisitMonitor:
             {"record_number": recno, "reason": reason}
             for recno, reason in sorted(self._diagnostics.items())
         ]
+        diagnostics.extend(
+            item
+            for item in sorted(
+                ambiguity_diagnostics,
+                key=lambda item: (int(item["record_number"]), str(item["reason"])),
+            )
+            if not any(
+                existing["record_number"] == item["record_number"]
+                for existing in diagnostics
+            )
+        )
         result = {
-            "enabled": self.enabled,
             "status": status,
             "source_health": source_health,
             "baseline": {
