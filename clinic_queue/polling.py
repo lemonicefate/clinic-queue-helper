@@ -7,11 +7,15 @@ import logging
 import sqlite3
 import time
 from datetime import date
+from typing import TYPE_CHECKING
 
 from .config import AppConfig
 from .dbf import DBFHeader, DBFReader
 from .his import EncounterSnapshot, PatientNameLookup, RAW_HIS_FIELDS, scan_today, snapshot_from_record
 from .queue import QueueStore
+
+if TYPE_CHECKING:
+    from .visit import VisitMonitor
 
 
 logger = logging.getLogger("clinic_queue.polling")
@@ -31,14 +35,31 @@ class HISPoller:
         self.store = store
         self.recovery_interval_seconds = recovery_interval_seconds
         self.tracked_by_recno: dict[int, EncounterSnapshot] = {}
+        self._ineligible_record_bytes: dict[int, bytes] = {}
+        self._encounter_snapshot: tuple[EncounterSnapshot, ...] = ()
         self.pending_recno: set[int] = set()
         self.last_record_count: int | None = None
         self._header_layout: tuple[object, ...] | None = None
         self._last_full_scan = 0.0
         self._patient_names: PatientNameLookup | None = None
+        self.visit_monitor: VisitMonitor | None = None
         self.his_stale = False
         self.his_error: str | None = None
         self.storage_error: str | None = None
+
+    def attach_visit_monitor(self, monitor: VisitMonitor) -> None:
+        """Run the read-only VISIT observer after each successful HIS poll."""
+        self.visit_monitor = monitor
+
+    def encounter_snapshot(self) -> tuple[EncounterSnapshot, ...]:
+        """Return the last complete immutable encounter view for VISIT association."""
+        return self._encounter_snapshot
+
+    def _poll_visit_monitor(self) -> None:
+        if self.visit_monitor is None:
+            return
+        self.visit_monitor.set_encounters(self._encounter_snapshot)
+        self.visit_monitor.poll_once()
 
     def initialize(self) -> None:
         """Perform the initial recovery scan, retaining prior SQLite state on read failure."""
@@ -67,6 +88,7 @@ class HISPoller:
         clinic_date = date.today()
         names = PatientNameLookup(self.config)
         unreadable: list[int] = []
+        record_bytes: dict[int, bytes] = {}
         encounters = scan_today(
             self.config,
             clinic_date,
@@ -74,6 +96,7 @@ class HISPoller:
             patient_names=names,
             header=header,
             record_errors=unreadable,
+            record_bytes=record_bytes,
         )
         self.store.reconcile(
             encounters,
@@ -82,6 +105,12 @@ class HISPoller:
             unreadable_recno=unreadable,
         )
         self.tracked_by_recno = {encounter.recno: encounter for encounter in encounters}
+        self._ineligible_record_bytes = {
+            recno: raw_bytes
+            for recno, raw_bytes in record_bytes.items()
+            if recno not in self.tracked_by_recno
+        }
+        self._encounter_snapshot = tuple(self.tracked_by_recno.values())
         self.pending_recno = set(unreadable)
         self.last_record_count = header.record_count
         self._header_layout = self._layout(header)
@@ -106,7 +135,11 @@ class HISPoller:
     def _poll_incremental(self, header: DBFHeader) -> None:
         assert self.last_record_count is not None
         first_new = self.last_record_count + 1
-        recnos = set(self.tracked_by_recno) | self.pending_recno
+        recnos = (
+            set(self.tracked_by_recno)
+            | set(self._ineligible_record_bytes)
+            | self.pending_recno
+        )
         if first_new <= header.record_count:
             recnos.update(range(first_new, header.record_count + 1))
         unreadable: list[int] = []
@@ -120,14 +153,19 @@ class HISPoller:
         ):
             self.pending_recno.discard(record.recno)
             previous = self.tracked_by_recno.get(record.recno)
+            previous_bytes = self._ineligible_record_bytes.get(record.recno)
             if previous is not None and self._record_matches_snapshot(record, previous):
+                continue
+            if previous is None and previous_bytes == record.raw_bytes:
                 continue
             encounter = snapshot_from_record(self.config, record, date.today(), names)
             if encounter is None:
+                self._ineligible_record_bytes[record.recno] = record.raw_bytes
                 if previous is not None:
                     self.store.remove_encounter(previous.encounter_key)
                     self.tracked_by_recno.pop(record.recno, None)
                 continue
+            self._ineligible_record_bytes.pop(record.recno, None)
             if previous is not None and previous.encounter_key != encounter.encounter_key:
                 self.store.remove_encounter(previous.encounter_key)
             self.store.reconcile(
@@ -139,6 +177,7 @@ class HISPoller:
         if unreadable:
             logger.warning("HIS poll skipped malformed record offsets: %s", unreadable)
             self.pending_recno.update(unreadable)
+        self._encounter_snapshot = tuple(self.tracked_by_recno.values())
         self.last_record_count = header.record_count
         self._header_layout = self._layout(header)
 
@@ -163,6 +202,7 @@ class HISPoller:
                 else:
                     self._poll_incremental(header)
             self._recovered()
+            self._poll_visit_monitor()
         except sqlite3.Error as exc:
             logger.exception("SQLite queue persistence failed during HIS polling")
             self.storage_error = str(exc)

@@ -10,6 +10,7 @@ from typing import Any
 
 
 DEFAULT_HIS_DATA_PATH = r"\\192.168.1.199\D\WM003\DATA"
+DEFAULT_VISIT_FILENAME = "RG011M1_VISIT.DBF"
 
 
 class ConfigurationError(ValueError):
@@ -22,6 +23,7 @@ class AppConfig:
     port: int
     his_data_path: Path
     rg011m1_filename: str
+    rg011m1_visit_filename: str
     pd001m1_filename: str
     poll_interval_ms: int
     browser_refresh_ms: int
@@ -32,6 +34,11 @@ class AppConfig:
     patient_name_field: str
     sqlite_path: Path
     log_path: Path
+
+    @property
+    def visit_filename(self) -> str:
+        """Compatibility name for the configurable VISIT source filename."""
+        return self.rg011m1_visit_filename
 
 
 def _resolve_config_path(config_file: Path, value: Any, default: str) -> Path:
@@ -90,13 +97,22 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     his_data_path = Path(his_value).expanduser().resolve()
 
     rg011m1_filename = settings.get("rg011m1_filename", "RG011M1.DBF")
+    rg011m1_visit_filename = settings.get(
+        "rg011m1_visit_filename",
+        settings.get("visit_filename", DEFAULT_VISIT_FILENAME),
+    )
     pd001m1_filename = settings.get("pd001m1_filename", "PD001M1.DBF")
     for name, value in (
         ("rg011m1_filename", rg011m1_filename),
+        ("rg011m1_visit_filename", rg011m1_visit_filename),
         ("pd001m1_filename", pd001m1_filename),
     ):
         if not isinstance(value, str) or not value.strip() or Path(value).name != value:
             raise ConfigurationError(f"{name} must be a filename, not a path.")
+
+    # `visit_monitor_enabled` was the PoC feature gate.  Keep accepting the
+    # legacy JSON key so existing installations continue to load, but do not
+    # interpret or validate it: the VISIT card is always-on now.
 
     poll_interval_ms = _require_int(settings, "poll_interval_ms", 500, minimum=100)
     browser_refresh_ms = _require_int(settings, "browser_refresh_ms", 1000, minimum=100)
@@ -134,6 +150,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         port=port,
         his_data_path=his_data_path,
         rg011m1_filename=rg011m1_filename,
+        rg011m1_visit_filename=rg011m1_visit_filename,
         pd001m1_filename=pd001m1_filename,
         poll_interval_ms=poll_interval_ms,
         browser_refresh_ms=browser_refresh_ms,

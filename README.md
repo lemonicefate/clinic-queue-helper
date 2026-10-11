@@ -20,9 +20,11 @@ A small clinic LAN utility for displaying today's HIS registrations and managing
 4. Edit `config.json` for the clinic:
 
    - Set `his_data_path` to the HIS data share containing `RG011M1.DBF` and, when available, `PD001M1.DBF`.
+   - `RG011M1.DBF` must contain the `KIND` registration category field. Only trimmed `KIND=1` registrations appear in any consultation list; `KIND=4`, blank, and unknown values are excluded.
    - Physician filters are entered on the queue page under 一診 and 二診. The fields are shared by every workstation connected to this server and save when focus leaves the field. Leave a field blank when that room has no session. Each non-empty `CCDOC` code can belong to only one room.
    - For an existing installation, `doctor_room_map` in `config.json` is used only to seed an empty room filter the first time the database starts. New installations can leave it empty and enter the codes on the page.
    - The current HIS schema uses `NUM` for the registration's patient number and in `PD001M1.DBF`, with `NAME` for the patient name. Set `patient_number_field` to the matching patient-number field in `PD001M1.DBF` and `patient_name_field` to the name field; leave the name field empty to show chart numbers instead.
+   - `rg011m1_visit_filename` selects the VISIT source and defaults to `RG011M1_VISIT.DBF`. The read-only 看診中 card is always-on; a legacy `visit_monitor_enabled` value is accepted and ignored.
    - Set `bind_host` and `port` for the clinic host. `0.0.0.0` makes the service reachable on its LAN interfaces; keep the host inside the clinic LAN.
    - Keep `sqlite_path` and `log_path` on an application-owned local drive, outside the HIS data directory.
 
@@ -40,7 +42,14 @@ On the server, open `http://127.0.0.1:8000`. From another clinic computer, open 
 
 Room views use `/?room=1` for 一診 and `/?room=2` for 二診; the default `/` view shows both rooms. Room membership comes only from matching the HIS `CCDOC` value to the two shared filters. Encounters matching neither filter remain visible in a separate read-only section; staff cannot manually assign them. A blank room filter means that room has no active session and no queue.
 
+The consultation lists use the HIS `RG011M1.KIND` field as an eligibility
+boundary. Only `KIND=1` records are shown. A missing `KIND` field makes HIS
+synchronization fail closed with a generic source warning; the application does
+not guess from `TREAT`, `OVER`, or `TIME_KIND`.
+
 The completed list stays collapsed until opened. `診別未確認` is also collapsed by default and displays a record count in its heading. During testing, it remains visible even when the count is zero. Room queues support presence, overdue, and reorder controls; HIS handles patient calling.
+
+Each visible room has a fixed read-only 看診中 card above 候診中. A unique stable VISIT observation can temporarily hide matching same-day waiting cards in the same room and session; the underlying queue order remains unchanged and the cards return when the observation ends without HIS completion. The monitor keeps unmatched candidates, source health, ambiguity, deletion, and other diagnostics in a collapsed read-only section. It does not change queue membership, order, presence, HIS data, or the official HIS-derived visit state, and it never emits `ACTIVE`. Use the controlled procedure in [docs/visit-manual-validation.md](docs/visit-manual-validation.md) with only clinic-approved synthetic or de-identified data.
 
 Browsers check for shared queue changes every second. A page reload waits while the session selector or a physician-code field is focused, and while a physician-code save is in progress. Expanded per-patient registration details remain expanded across reloads in the same browser tab. Changing a room filter saves that field when it loses focus; the latest saved value is shared across workstations. The server checks HIS data every 500 ms by default and runs a full recovery scan every 45 seconds.
 

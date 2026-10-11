@@ -16,6 +16,8 @@ from .config import AppConfig
 from .polling import HISPoller
 from .queue import QueueError, QueueStore
 from .state import ClinicSession, PresenceState, normalize_time_kind
+from .visit import VisitMonitor
+from .visit_projection import project_visit_monitor
 
 
 _TEMPLATE_DIR = Path(__file__).with_name("templates")
@@ -49,6 +51,12 @@ def create_app(config: AppConfig) -> FastAPI:
     store = QueueStore(config.sqlite_path)
     store.initialize_room_doctor_codes(config.doctor_room_map)
     poller = HISPoller(config, store)
+    visit_monitor = VisitMonitor(
+        config,
+        encounter_provider=poller.encounter_snapshot,
+        room_map_provider=store.get_doctor_room_map,
+    )
+    poller.attach_visit_monitor(visit_monitor)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -66,8 +74,26 @@ def create_app(config: AppConfig) -> FastAPI:
     application.state.config = config
     application.state.queue_store = store
     application.state.his_poller = poller
+    application.state.visit_monitor = visit_monitor
     templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
     poller.initialize()
+    visit_monitor.initialize()
+
+    def board_projection(request: Request) -> tuple[dict, dict]:
+        selected_time_kind = _selected_time_kind(request)
+        board = store.get_board(selected_time_kind)
+        monitor = visit_monitor.response(selected_time_kind=int(selected_time_kind))
+        return project_visit_monitor(board, monitor)
+
+    def queue_response(request: Request) -> dict:
+        board, monitor = board_projection(request)
+        result = {
+            **board,
+            "his_stale": poller.his_stale,
+            "storage_error": poller.storage_error,
+            "visit_monitor": monitor,
+        }
+        return result
 
     @application.exception_handler(sqlite3.Error)
     async def sqlite_error_handler(request: Request, exc: sqlite3.Error) -> JSONResponse:
@@ -88,7 +114,7 @@ def create_app(config: AppConfig) -> FastAPI:
         room_param = request.query_params.get("room")
         selected_room = int(room_param) if room_param in ("1", "2") else None
         selected_time_kind = _selected_time_kind(request)
-        board = store.get_board(selected_time_kind)
+        board, monitor_response = board_projection(request)
         completed_encounters = [
             encounter
             for encounter in board["completed"]
@@ -128,17 +154,20 @@ def create_app(config: AppConfig) -> FastAPI:
                     **board,
                     "his_stale": poller.his_stale,
                     "storage_error": poller.storage_error,
+                    "visit_monitor": monitor_response,
                 },
+                "visit_monitor": monitor_response,
             },
         )
 
     @application.get("/api/queue")
     async def get_queue(request: Request) -> dict:
-        return {
-            **store.get_board(_selected_time_kind(request)),
-            "his_stale": poller.his_stale,
-            "storage_error": poller.storage_error,
-        }
+        return queue_response(request)
+
+    @application.get("/api/visit-monitor")
+    async def get_visit_monitor(request: Request) -> dict:
+        _, monitor = board_projection(request)
+        return monitor
 
     @application.post("/api/room-doctor-code")
     async def update_room_doctor_code(update: RoomDoctorCodeUpdate, request: Request) -> dict:
@@ -149,11 +178,7 @@ def create_app(config: AppConfig) -> FastAPI:
             )
         except QueueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {
-            **store.get_board(_selected_time_kind(request)),
-            "his_stale": poller.his_stale,
-            "storage_error": poller.storage_error,
-        }
+        return queue_response(request)
 
     @application.post("/api/action")
     async def queue_action(action: QueueAction, request: Request) -> dict:
@@ -173,7 +198,7 @@ def create_app(config: AppConfig) -> FastAPI:
                 store.move_down(action.encounter_key)
             else:
                 raise QueueError(f"Unknown queue action: {action.action}")
-            return store.get_board(_selected_time_kind(request))
+            return queue_response(request)
         except QueueError as exc:
             status_code = 404 if "not found" in str(exc).lower() else 400
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -193,7 +218,7 @@ def create_app(config: AppConfig) -> FastAPI:
                 if reorder.position is None or reorder.insert_after is not None:
                     raise QueueError("A reorder requires a final position or a target insertion position.")
                 application.state.queue_store.reorder(reorder.encounter_key, reorder.position)
-            return application.state.queue_store.get_board(_selected_time_kind(request))
+            return queue_response(request)
         except QueueError as exc:
             status_code = 404 if "not found" in str(exc).lower() else 400
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc

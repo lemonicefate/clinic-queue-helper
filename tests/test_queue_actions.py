@@ -499,7 +499,7 @@ def test_browser_action_api_keeps_local_controls_without_calling_actions(tmp_pat
     assert "下一位" not in page.text
     assert "叫號" not in page.text
     assert "設為目前看診" not in page.text
-    assert "看診中" not in page.text
+    assert "看診中（實驗）" not in page.text
     assert "已叫號" not in page.text
     assert 'draggable="true"' in page.text
     assert away.status_code == 200

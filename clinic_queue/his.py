@@ -22,6 +22,7 @@ RAW_HIS_FIELDS = (
     "CCTIME",
     "TETDAY",
     "CCDOC",
+    "KIND",
     "OVER",
     "TREAT",
     "TRDATE",
@@ -31,6 +32,8 @@ RAW_HIS_FIELDS = (
     "RELKEY",
     "SYS_2015",
 )
+
+CONSULTATION_KIND = "1"
 
 
 @dataclass(frozen=True)
@@ -128,6 +131,14 @@ def snapshot_from_record(
     visit_date = parse_his_date(record.raw_value("TETDAY"))
     if visit_date != clinic_date:
         return None
+    registration_kind = _normalized_field(record.raw_fields, "KIND")
+    if registration_kind != CONSULTATION_KIND:
+        logger.debug(
+            "Skipping RG011M1 record %s with KIND=%r; only KIND=1 is consultation-eligible",
+            record.recno,
+            registration_kind,
+        )
+        return None
     state_fields: dict[str, Any] = dict(record.raw_fields)
     state_fields["_DELETED"] = record.deleted
     resolved = resolve_his_state(state_fields)
@@ -161,10 +172,16 @@ def scan_today(
     patient_names: PatientNameLookup | None = None,
     header: DBFHeader | None = None,
     record_errors: list[int] | None = None,
+    record_bytes: dict[int, bytes] | None = None,
 ) -> list[EncounterSnapshot]:
-    """Read records for today's TETDAY, optionally retaining deleted rows for reconciliation."""
+    """Read today's eligible records and optionally retain physical bytes for polling."""
     reader = DBFReader(config.his_data_path / config.rg011m1_filename)
     actual_header = header or reader.read_header()
+    available_fields = {field.name.upper() for field in actual_header.fields}
+    if "KIND" not in available_fields:
+        raise DBFReadError(
+            f"{config.rg011m1_filename} is missing required RG011M1 field KIND"
+        )
     names = patient_names or PatientNameLookup(config)
     encounters: list[EncounterSnapshot] = []
 
@@ -173,6 +190,8 @@ def scan_today(
         header=actual_header,
         record_errors=record_errors,
     ):
+        if record_bytes is not None:
+            record_bytes[record.recno] = record.raw_bytes
         encounter = snapshot_from_record(config, record, clinic_date, names)
         if encounter is None:
             continue

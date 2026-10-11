@@ -2,7 +2,10 @@ import json
 import logging
 from datetime import date
 
+import pytest
+
 from clinic_queue.config import load_config
+from clinic_queue.dbf import DBFReadError
 from tests.dbf_fixtures import write_dbf
 
 
@@ -17,6 +20,7 @@ def test_today_scan_uses_tetday_and_excludes_deleted_records(tmp_path, caplog):
             ("CCDATE", "D", 8),
             ("CCTIME", "C", 4),
             ("CCDOC", "C", 6),
+            ("KIND", "C", 1),
             ("OVER", "C", 1),
             ("TREAT", "C", 1),
             ("GINO1", "C", 10),
@@ -30,6 +34,7 @@ def test_today_scan_uses_tetday_and_excludes_deleted_records(tmp_path, caplog):
                 "CCDATE": "20261001",
                 "CCTIME": "0900",
                 "CCDOC": "DOC1",
+                "KIND": "1",
                 "OVER": "",
                 "TREAT": "N",
                 "GINO1": "1510070053",
@@ -41,6 +46,7 @@ def test_today_scan_uses_tetday_and_excludes_deleted_records(tmp_path, caplog):
                 "CCDATE": "20261008",
                 "CCTIME": "0910",
                 "CCDOC": "DOC1",
+                "KIND": "1",
                 "OVER": "",
                 "TREAT": "N",
                 "GINO1": "1510070054",
@@ -53,6 +59,7 @@ def test_today_scan_uses_tetday_and_excludes_deleted_records(tmp_path, caplog):
                 "CCDATE": "20261008",
                 "CCTIME": "0920",
                 "CCDOC": "DOC1",
+                "KIND": "1",
                 "OVER": "",
                 "TREAT": "N",
                 "GINO1": "1510070055",
@@ -77,6 +84,7 @@ def test_today_scan_uses_tetday_and_excludes_deleted_records(tmp_path, caplog):
     assert encounter.visit_date == date(2026, 10, 8)
     assert encounter.encounter_key == "relkey:REL-001"
     assert encounter.raw_his["TREAT"].strip() == "N"
+    assert encounter.raw_his["KIND"].strip() == "1"
     assert encounter.patient_name == "100001"
     assert "PD001M1.DBF" in caplog.text
 
@@ -90,6 +98,7 @@ def test_patient_lookup_uses_only_configured_number_and_name_fields(tmp_path, mo
             ("NUM", "C", 6),
             ("TETDAY", "D", 8),
             ("CCDATE", "D", 8),
+            ("KIND", "C", 1),
             ("OVER", "C", 1),
             ("TREAT", "C", 1),
             ("RELKEY", "C", 12),
@@ -99,6 +108,7 @@ def test_patient_lookup_uses_only_configured_number_and_name_fields(tmp_path, mo
                 "NUM": "100001",
                 "TETDAY": "20261008",
                 "CCDATE": "20261001",
+                "KIND": "1",
                 "OVER": "",
                 "TREAT": "N",
                 "RELKEY": "REL-001",
@@ -152,8 +162,8 @@ def test_missing_patient_master_keeps_encounter_visible_with_chart_number(tmp_pa
     his_path.mkdir()
     write_dbf(
         his_path / "RG011M1.DBF",
-        [("NUM", "C", 6), ("TETDAY", "D", 8), ("OVER", "C", 1), ("TREAT", "C", 1)],
-        [{"NUM": "100001", "TETDAY": date.today().strftime("%Y%m%d"), "OVER": "", "TREAT": "N"}],
+        [("NUM", "C", 6), ("TETDAY", "D", 8), ("KIND", "C", 1), ("OVER", "C", 1), ("TREAT", "C", 1)],
+        [{"NUM": "100001", "TETDAY": date.today().strftime("%Y%m%d"), "KIND": "1", "OVER": "", "TREAT": "N"}],
     )
     config_path = tmp_path / "config.json"
     config_path.write_text(
@@ -183,8 +193,8 @@ def test_unknown_his_state_stays_visible_in_today_scan(tmp_path, caplog):
     his_path.mkdir()
     write_dbf(
         his_path / "RG011M1.DBF",
-        [("NUM", "C", 6), ("TETDAY", "D", 8), ("OVER", "C", 1), ("TREAT", "C", 1)],
-        [{"NUM": "100001", "TETDAY": date.today().strftime("%Y%m%d"), "OVER": "?", "TREAT": "Z"}],
+        [("NUM", "C", 6), ("TETDAY", "D", 8), ("KIND", "C", 1), ("OVER", "C", 1), ("TREAT", "C", 1)],
+        [{"NUM": "100001", "TETDAY": date.today().strftime("%Y%m%d"), "KIND": "1", "OVER": "?", "TREAT": "Z"}],
     )
     config_path = tmp_path / "config.json"
     config_path.write_text(
@@ -202,3 +212,57 @@ def test_unknown_his_state_stays_visible_in_today_scan(tmp_path, caplog):
     assert encounters[0].initial_presence.value == "PRESENT"
     assert "OVER='?'" in caplog.text
     assert "TREAT='Z'" in caplog.text
+
+
+def test_today_scan_only_includes_kind_one_and_preserves_the_raw_kind(tmp_path):
+    his_path = tmp_path / "his"
+    his_path.mkdir()
+    write_dbf(
+        his_path / "RG011M1.DBF",
+        [
+            ("NUM", "C", 6),
+            ("TETDAY", "D", 8),
+            ("KIND", "C", 1),
+            ("OVER", "C", 1),
+            ("TREAT", "C", 1),
+            ("RELKEY", "C", 12),
+        ],
+        [
+            {"NUM": "100001", "TETDAY": date.today(), "KIND": "1", "TREAT": "N", "RELKEY": "REL-1"},
+            {"NUM": "100002", "TETDAY": date.today(), "KIND": "4", "TREAT": "N", "RELKEY": "REL-4"},
+            {"NUM": "100003", "TETDAY": date.today(), "KIND": "", "TREAT": "N", "RELKEY": "REL-EMPTY"},
+            {"NUM": "100004", "TETDAY": date.today(), "KIND": "9", "TREAT": "N", "RELKEY": "REL-9"},
+        ],
+    )
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"his_data_path": str(his_path), "sqlite_path": "state/queue.sqlite3", "log_path": "logs/app.log"}),
+        encoding="utf-8",
+    )
+
+    from clinic_queue.his import scan_today
+
+    encounters = scan_today(load_config(config_path), date.today())
+
+    assert [encounter.patient_no for encounter in encounters] == ["100001"]
+    assert encounters[0].raw_his["KIND"].strip() == "1"
+
+
+def test_today_scan_requires_kind_field_in_rg011m1(tmp_path):
+    his_path = tmp_path / "his"
+    his_path.mkdir()
+    write_dbf(
+        his_path / "RG011M1.DBF",
+        [("NUM", "C", 6), ("TETDAY", "D", 8), ("TREAT", "C", 1)],
+        [{"NUM": "100001", "TETDAY": date.today(), "TREAT": "N"}],
+    )
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"his_data_path": str(his_path), "sqlite_path": "state/queue.sqlite3", "log_path": "logs/app.log"}),
+        encoding="utf-8",
+    )
+
+    from clinic_queue.his import scan_today
+
+    with pytest.raises(DBFReadError, match="KIND"):
+        scan_today(load_config(config_path), date.today())

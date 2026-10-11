@@ -15,6 +15,7 @@ FIELDS = [
     ("CCDATE", "D", 8),
     ("CCTIME", "C", 4),
     ("CCDOC", "C", 6),
+    ("KIND", "C", 1),
     ("OVER", "C", 1),
     ("TREAT", "C", 1),
     ("TIME_KIND", "C", 1),
@@ -29,6 +30,7 @@ def rg_row(
     doctor="DOC1",
     treat="N",
     over="",
+    kind="1",
     time_kind="1",
     deleted=False,
     visit_day=None,
@@ -40,6 +42,7 @@ def rg_row(
         "CCDATE": date.today().strftime("%Y%m%d"),
         "CCTIME": "0900",
         "CCDOC": doctor,
+        "KIND": kind,
         "OVER": over,
         "TREAT": treat,
         "TIME_KIND": time_kind,
@@ -76,6 +79,43 @@ def test_incremental_poller_detects_appends_and_does_not_change_his_hash(tmp_pat
         "100002",
     ]
     assert source_hash_after == source_hash_before
+
+
+def test_non_consultation_kind_is_removed_and_reentry_appends_to_queue_tail(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    make_source(config, [rg_row("100001"), rg_row("100002")])
+    poller, store = make_poller(config)
+    poller.initialize()
+
+    make_source(config, [rg_row("100001", kind="4"), rg_row("100002")])
+    poller.poll_once()
+
+    waiting = store.get_board(1)["rooms"][1]["waiting"]
+    assert [entry["patient_no"] for entry in waiting] == ["100002"]
+    assert [entry["queue_position"] for entry in waiting] == [1]
+
+    make_source(config, [rg_row("100001"), rg_row("100002")])
+    poller.poll_once()
+
+    waiting = store.get_board(1)["rooms"][1]["waiting"]
+    assert [entry["patient_no"] for entry in waiting] == ["100002", "100001"]
+    assert [entry["queue_position"] for entry in waiting] == [1, 2]
+
+
+def test_missing_kind_schema_fails_closed_and_keeps_last_queue_with_source_error(tmp_path):
+    config = create_config(tmp_path, {"DOC1": 1})
+    make_source(config, [rg_row("100001")])
+    poller, store = make_poller(config)
+    poller.initialize()
+
+    legacy_fields = [field for field in FIELDS if field[0] != "KIND"]
+    write_dbf(config.his_data_path / config.rg011m1_filename, legacy_fields, [rg_row("100001")])
+    poller.poll_once()
+
+    assert poller.his_stale is True
+    assert [entry["patient_no"] for entry in store.get_board(1)["rooms"][1]["waiting"]] == [
+        "100001"
+    ]
 
 
 def test_tracked_record_changes_reconcile_completion_and_deletion(tmp_path):

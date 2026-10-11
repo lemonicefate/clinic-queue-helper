@@ -198,7 +198,7 @@ def test_single_room_views_filter_columns_and_keep_queue_controls(tmp_path):
     assert "已掛暫離" in room_one.text
     assert "已約未到" in room_one.text
     assert "未報到" not in room_one.text
-    assert "看診中" not in room_two.text
+    assert "看診中（實驗）" not in room_two.text
     assert "已叫號" not in room_two.text
     assert room_two.status_code == 200
     assert 'aria-label="二診"' in room_two.text
