@@ -48,9 +48,9 @@ After launching the application on one Windows computer inside the clinic LAN:
 
 - a browser starts on 早診 and remembers its own selection; session choice is not shared between browsers
 
-- every visible patient list, including room queues, unmatched records, and completed patients, is filtered to the selected session; missing or unsupported session records appear under `診別未確認`
+- every patient category, including room queues, unmatched records, and completed patients, is filtered to the selected session; missing or unsupported session records appear under `開發人員專區` in `診別未確認`
 
-- records with a missing or unsupported `TIME_KIND` remain visible under `診別未確認`
+- records with a missing or unsupported `TIME_KIND` remain available under `開發人員專區` in `診別未確認`
 
 - 一診 and 二診 queues are ordered independently for each clinic session
 
@@ -730,7 +730,7 @@ This is valid.
 - Do not provide manual encounter-to-room assignment or a room-assignment override.
 - Reject a non-empty `CCDOC` value if it is already selected for the other room.
 - A blank filter means that room has no active session and no queue; it does not mean "show all doctors."
-- If an encounter's `CCDOC` matches neither filter, keep it visible in a separate read-only `未納入一診／二診篩選` area. Do not add an assignment state or manual assignment action.
+- If an encounter's `CCDOC` matches neither filter, keep it available in a separate read-only `未納入一診／二診篩選` area under the collapsed `開發人員專區`. Do not add an assignment state or manual assignment action.
 - If an existing encounter moves between matched and unmatched status after a filter changes, preserve its local presence and overdue values. When it enters a room's queue, append it to that room and session's tail; preserve unaffected queue order.
 - For databases that do not yet have saved room filters, a legacy `doctor_room_map` may seed a room only when exactly one code maps to it. This seed is a migration aid only; afterward the SQLite filters are authoritative. Ambiguous legacy mappings leave that room blank for staff entry.
 - Do not infer room membership from any other HIS field.
@@ -989,7 +989,7 @@ Provide:
 
 - selected-session view across every visible patient list
 
-- a separate `診別未確認` group that remains visible regardless of the selected session
+- a separate `開發人員專區` containing a `診別未確認` group that remains available regardless of the selected session
 
 Use URL parameters or routes.
 
@@ -1009,7 +1009,7 @@ Optional:
 
 Room filter affects presentation only.
 
-The browser's selected session is local to that browser and does not change other browsers' selections. Session filtering includes room queues, temporarily-away patients, unmatched read-only encounters, and completed patients. Room filters are shared across workstations on the server. `診別未確認` remains visible as a collapsed section with a count; during testing, show the section even when the count is zero.
+The browser's selected session is local to that browser and does not change other browsers' selections. Session filtering includes room queues, temporarily-away patients, unmatched read-only encounters, and completed patients. Room filters are shared across workstations on the server. Unmatched records, unknown-session records, and VISIT diagnostics are grouped inside the collapsed `開發人員專區`; when expanded, `診別未確認` shows a count, including zero during testing.
 
 ---
 
@@ -1065,7 +1065,7 @@ No masking is required in MVP.
 
 Completed encounters remain visible for the current clinic day in a collapsed section.
 
-The section is filtered to the selected session. Completed encounters with unknown `TIME_KIND` stay in `診別未確認`.
+The section is filtered to the selected session. Completed encounters with unknown `TIME_KIND` stay in `開發人員專區` under `診別未確認`.
 
 Default:
 
@@ -1235,7 +1235,7 @@ Do not require WebSocket.
 
 User actions should immediately update server state and then naturally synchronize other clients. A browser with the session selector or physician-code field focused defers its page reload until focus leaves and any save finishes; other browsers continue to receive updates normally.
 
-When a full-page refresh occurs, restore expanded per-patient registration details for matching encounters in the same browser tab. New encounters remain collapsed. This state does not change the default collapsed state of the top-level `已完成` and `診別未確認` sections.
+When a full-page refresh occurs, restore expanded per-patient registration details for matching encounters in the same browser tab. New encounters remain collapsed. This state does not change the default collapsed state of the top-level `已完成` section, the `開發人員專區`, or its child diagnostic sections.
 
 Queue data is shared across browsers, while each browser's selected `TIME_KIND` is a browser-local preference. The selected session must be applied consistently to the initial page and subsequent queue polling.
 
@@ -1516,7 +1516,7 @@ Use the existing highest-level ASGI application seam with a real temporary SQLit
 
 - every visible patient category is filtered to the selected session
 
-- missing/unsupported `TIME_KIND` remains visible under `診別未確認`
+- missing/unsupported `TIME_KIND` remains available under `開發人員專區` in `診別未確認`
 
 - completed patients follow the same session filter
 
@@ -1722,7 +1722,7 @@ The MVP is complete when all of the following are true.
 
 10. Each room's shared `CCDOC` filter is saved in server-side SQLite and applies to all workstations.
 
-11. Encounters matching neither room filter remain visible in a read-only unmatched area, with no manual assignment.
+11. Encounters matching neither room filter remain available in a read-only unmatched area under `開發人員專區`, with no manual assignment.
 
 12. New registrations append to the selected `(room, TIME_KIND)` queue tail.
 
@@ -1786,7 +1786,7 @@ The MVP is complete when all of the following are true.
 
 42. 早診, 午診, and 晚診 are filtered by `TIME_KIND` across every visible list.
 
-43. Records with missing or unsupported `TIME_KIND` remain visible under `診別未確認`.
+43. Records with missing or unsupported `TIME_KIND` remain available under `開發人員專區` in `診別未確認`.
 
 44. Visit classification uses the agreed precedence: completed, then `TREAT=C` as `未報到`, then other active states as waiting.
 
@@ -1796,7 +1796,7 @@ The MVP is complete when all of the following are true.
 
 47. `CCDOC` is the only room-membership source. Presence, overdue, and queue-order changes remain application-owned and do not write to HIS.
 
-48. Completed records follow the same selected-session filter; unknown sessions stay under `診別未確認`.
+48. Completed records follow the same selected-session filter; unknown sessions stay under `開發人員專區` in `診別未確認`.
 
 ---
 
@@ -1832,9 +1832,9 @@ Staff currently see today's encounters without a clinic-session filter, so morni
 
 ## Solution
 
-Continue selecting the clinic day from the server's system-local date and HIS `TETDAY`. Add a browser-local clinic-session selection based on `TIME_KIND`: `1` 早診, `2` 午診, and `3` 晚診. Default to 早診, remember each browser's selection independently, filter all visible patient lists, and keep records with missing or unsupported `TIME_KIND` visible as `診別未確認`.
+Continue selecting the clinic day from the server's system-local date and HIS `TETDAY`. Add a browser-local clinic-session selection based on `TIME_KIND`: `1` 早診, `2` 午診, and `3` 晚診. Default to 早診, remember each browser's selection independently, filter all visible patient lists, and keep records with missing or unsupported `TIME_KIND` available under `開發人員專區` in `診別未確認`.
 
-Give each `(room, TIME_KIND)` pair its own local candidate order. Derive room membership only from the physician account in HIS `CCDOC`, using one shared editable filter for 一診 and one for 二診. Keep unmatched encounters visible in a separate read-only area, and keep presence, overdue, and ordering controls for matched room queues. HIS performs actual calls. Display only the supported visit categories: 候診, 完成, and 未報到.
+Give each `(room, TIME_KIND)` pair its own local candidate order. Derive room membership only from the physician account in HIS `CCDOC`, using one shared editable filter for 一診 and one for 二診. Keep unmatched encounters available in a separate read-only area inside the collapsed `開發人員專區`, and keep presence, overdue, and ordering controls for matched room queues. HIS performs actual calls. Display only the supported visit categories: 候診, 完成, and 未報到.
 
 ## User Stories
 
@@ -1848,9 +1848,9 @@ Give each `(room, TIME_KIND)` pair its own local candidate order. Derive room me
 8. As clinic staff, I want the selected session applied to both-room and single-room views, so that the room filter and session filter work together.
 9. As clinic staff, I want the session filter applied to waiting patients, so that another session's waiting encounters do not appear in my queue.
 10. As clinic staff, I want the session filter applied to temporarily-away patients, so that all visible room lists follow the same session.
-11. As clinic staff, I want unmatched encounters filtered by the selected session and kept visible in a read-only area, so that every HIS encounter remains visible without creating a manual room assignment state.
+11. As clinic staff, I want unmatched encounters filtered by the selected session and kept available in a read-only area inside `開發人員專區`, so that every HIS encounter remains accessible without creating a manual room assignment state.
 12. As clinic staff, I want completed encounters filtered by the selected session, so that the completed section does not mix sessions.
-13. As clinic staff, I want encounters with a missing or unsupported `TIME_KIND` to remain visible as `診別未確認`, so that data issues do not silently hide patients.
+13. As clinic staff, I want encounters with a missing or unsupported `TIME_KIND` to remain available as `診別未確認` inside `開發人員專區`, so that data issues do not silently disappear.
 14. As clinic staff, I want `診別未確認` records to remain separate from 早診, 午診, and 晚診, so that no uncertain encounter is silently assigned to a session.
 15. As clinic staff, I want to see 候診, 完成, and 未報到 as the supported visit categories, so that the interface does not imply a state that HIS does not provide.
 16. As clinic staff, I want temporary `TREAT=B` or `OVER=F` records treated as 候診, so that temporary data is not mislabeled as an active consultation.
@@ -1875,14 +1875,14 @@ Give each `(room, TIME_KIND)` pair its own local candidate order. Derive room me
 - Store the 一診 and 二診 physician filters in the server's SQLite database so all workstations share them. Save an edited field on blur; a blank value means that room has no session and no queue. Reject duplicate non-empty values. The latest accepted save wins, and HIS reconciliation reads the persisted filters inside its write transaction so a stale poll cannot restore an older mapping.
 - Suppress page reloads while the clinic-session selector or a physician-filter field has focus. After focus leaves the control, apply one pending refresh. Do not reload while a physician-filter save is in flight. Preserve each encounter card's registration-details disclosure state in the current tab across full-page refreshes; new encounters start collapsed.
 - Apply the selected session to every visible patient category and to the initial page and subsequent queue polling.
-- Keep missing/unsupported `TIME_KIND` records visible in a separate `診別未確認` group across selected-session views.
+- Keep missing/unsupported `TIME_KIND` records available in a separate `診別未確認` group inside the collapsed `開發人員專區` across selected-session views.
 - Classify completed records first when `OVER=T` or `TREAT=Y`; otherwise classify `TREAT=C` as 未報到; classify other active records, including `TREAT=B`, `OVER=F`, and unknown active combinations, as 候診. Deleted records remain invalidated and excluded from active lists.
 - Keep HIS-derived visit category separate from local presence (`PRESENT` / `AWAY`). A manual presence decision remains a local override.
 - Maintain independent local order per `(room, TIME_KIND)`. New-encounter insertion, moving back from temporarily away, up/down moves, and drag-and-drop must affect only that order.
-- Derive room membership exclusively from `CCDOC` matching a room filter. Do not expose manual assignment or an assignment override. Keep records matching neither filter in an independent read-only area. When a filter change moves a waiting encounter into a room, append it to the destination queue tail and preserve unaffected ordering; retain its local presence and overdue state.
+- Derive room membership exclusively from `CCDOC` matching a room filter. Do not expose manual assignment or an assignment override. Keep records matching neither filter in an independent read-only area inside `開發人員專區`. When a filter change moves a waiting encounter into a room, append it to the destination queue tail and preserve unaffected ordering; retain its local presence and overdue state.
 - Keep shared room filters and application-owned presence, overdue, and reorder state in SQLite. These operations do not write to HIS or control HIS call order.
 - Remove local next, call, and set-current behavior. Do not display a separate official called or in-consultation state because current HIS fields do not supply one. The read-only VISIT current-patient card is a display projection and does not change the official visit state.
-- Persist normalized `TIME_KIND` with the encounter state while retaining the raw HIS value. Treat missing/unsupported values as unknown. Unknown `TIME_KIND` takes precedence over the unmatched area and appears only in `診別未確認`; the latter is collapsed by default and shows a count, including zero during testing. Completed unmatched encounters remain read-only in the unmatched area.
+- Persist normalized `TIME_KIND` with the encounter state while retaining the raw HIS value. Treat missing/unsupported values as unknown. Unknown `TIME_KIND` takes precedence over the unmatched area and appears only in `開發人員專區` under `診別未確認`; the developer area and its child diagnostic sections are collapsed by default, and `診別未確認` shows a count, including zero during testing. Completed unmatched encounters remain read-only in the unmatched area.
 - Continue browser polling so shared queue changes appear within the existing synchronization target; session preference remains local to each browser. Polling must not interrupt interaction with the selector or physician filters.
 
 ## Testing Decisions
@@ -1937,14 +1937,15 @@ with the same normalized `NUM`, clinic date, room, and `TIME_KIND`. NUM is used
 for this presentation rule only; VISIT encounter association continues to use
 exact `SYS_2015` or a unique `NUM` + `CCDOC` + date + `TIME_KIND` match. The
 suppression applies only to `候診中` entries. `已掛暫離`, `已約未到`, `完成`,
-unmatched, invalid, and `診別未確認` groups remain visible. The projection
+unmatched, invalid, and `診別未確認` groups remain available under the collapsed
+`開發人員專區`. The projection
 leaves QueueStore rows and `queue_position` values unchanged, adds visible
 display numbering after filtering, and reports suppressed encounter keys in
 the independent `visit_monitor` projection.
 
 GET queue responses, the rendered board, and room-code, presence, overdue, and
 reorder responses expose the same filtered board and monitor projection. The
-diagnostic area is collapsed by default with a count and retains source-health,
+`開發人員專區` is collapsed by default; its VISIT diagnostic area retains source-health,
 unmatched, ambiguity, deletion, and association reasons. The primary card
 shows only patient identity and has no mutation controls. Manual validation
 uses only synthetic, de-identified, or clinic-approved sandbox data; real PHI,

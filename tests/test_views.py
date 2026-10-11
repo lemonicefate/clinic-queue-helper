@@ -97,8 +97,16 @@ def test_both_room_view_has_room_columns_and_collapsed_completed_section(tmp_pat
     assert "#17 Name 100004" in response.text
     assert '<details class="completed-section">' in response.text
     assert '<details class="completed-section" open' not in response.text
-    assert '<details class="unconfirmed" aria-label="診別未確認">' in response.text
-    assert "診別未確認 (0)" in response.text
+    developer_area = re.search(r'<details class="developer-area"[^>]*>', response.text)
+    assert developer_area is not None
+    assert " open" not in developer_area.group(0)
+    developer_area_end = response.text.index('<details class="completed-section"', developer_area.end())
+    developer_area_content = response.text[developer_area.end() : developer_area_end]
+    assert "<summary>開發人員專區</summary>" in developer_area_content
+    assert '<details class="visit-monitor-diagnostics"' in developer_area_content
+    assert '<section class="unmatched"' in developer_area_content
+    assert '<details class="unconfirmed" aria-label="診別未確認">' in developer_area_content
+    assert "診別未確認 (0)" in developer_area_content
     assert 'data-room-column="1"' in response.text
     assert 'data-room-column="2"' in response.text
     assert 'data-room-id="1" data-time-kind="1"' in response.text

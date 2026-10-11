@@ -73,6 +73,10 @@
       .visit-monitor-diagnostics h3 { margin-bottom: .45rem; }
       .visit-diagnostic { display: flex; flex-wrap: wrap; gap: .35rem .75rem; margin: .45rem 0; padding: .7rem .85rem; border: 1px solid #e0e8e8; border-radius: .7rem; background: var(--surface); }
       .visit-diagnostic strong { color: #29464c; }
+      .developer-area { margin-top: 1.1rem; border: 1px solid var(--line); border-radius: .9rem; background: var(--surface); }
+      .developer-area > summary { min-height: 2.75rem; padding: .8rem 1.25rem; cursor: pointer; color: #2d4b51; font-weight: 700; }
+      .developer-area[open] > summary { border-bottom: 1px solid var(--line); }
+      .developer-area-content { padding: 0 1.25rem 1.1rem; }
       .section-count { min-width: 1.55rem; padding: .08rem .38rem; border-radius: 999px; background: #edf3f3; color: #466168; font-size: .78rem; font-variant-numeric: tabular-nums; text-align: center; }
       .patient { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .65rem 1rem; margin: .45rem 0; padding: .8rem .85rem; border: 1px solid #e0e8e8; border-radius: .7rem; background: var(--surface); }
       .patient:hover { border-color: #c5d6d6; }
@@ -135,6 +139,8 @@
         .queue-actions { width: 100%; grid-column: 1; justify-content: flex-start; }
         .queue-actions button { min-width: 0; flex: 1 1 calc(50% - .25rem); }
         .registration-details { grid-column: 1; }
+        .developer-area > summary { padding: .75rem .8rem; }
+        .developer-area-content { padding: 0 .8rem .9rem; }
         .unmatched, .unconfirmed, .completed-section { padding: .9rem .8rem; }
       }
       @media (prefers-reduced-motion: no-preference) {
@@ -296,114 +302,119 @@
         {% endfor %}
       </div>
 
-      {% set visit_diagnostic_count = visit_monitor.unmatched.candidates | length + visit_monitor.diagnostics | length %}
-      <details class="visit-monitor-diagnostics" aria-label="VISIT 未納入與診斷">
-        <summary>VISIT 未納入／診斷 ({{ visit_diagnostic_count }})</summary>
-          <h3>未納入診間候選</h3>
-          {% for candidate in visit_monitor.unmatched.candidates %}
-            <article class="patient visit-candidate visit-unmatched-candidate" data-visit-encounter-key="{{ candidate.encounter_key }}">
-              <div class="patient-main">
-                <div class="patient-identity">
-                  <strong>#{{ candidate.patient_no }} {{ candidate.patient_name }}</strong>
-                </div>
-                <span class="secondary">病歷號 {{ candidate.patient_no }} · 證據狀態 {{ candidate.status }}</span>
-              </div>
-              <span class="secondary">醫師 {{ candidate.doctor_code }} · {{ candidate.clinic_session }} · {{ candidate.evidence_reason }}</span>
-            </article>
-          {% else %}
-            <p class="empty">目前沒有未納入診間的 VISIT 候選</p>
-          {% endfor %}
-          <h3>未解析／刪除／已完成關聯</h3>
-          {% for diagnostic in visit_monitor.diagnostics %}
-            <article class="visit-diagnostic" data-visit-record-number="{{ diagnostic.record_number }}">
-              <strong>VISIT 紀錄 #{{ diagnostic.record_number }}</strong>
-              <span class="secondary">{{ diagnostic.reason }}</span>
-            </article>
-          {% else %}
-            <p class="empty">目前沒有 VISIT 關聯診斷</p>
-          {% endfor %}
-      </details>
+      <details class="developer-area">
+        <summary>開發人員專區</summary>
+        <div class="developer-area-content">
+          {% set visit_diagnostic_count = visit_monitor.unmatched.candidates | length + visit_monitor.diagnostics | length %}
+          <details class="visit-monitor-diagnostics" aria-label="VISIT 未納入與診斷">
+            <summary>VISIT 未納入／診斷 ({{ visit_diagnostic_count }})</summary>
+              <h3>未納入診間候選</h3>
+              {% for candidate in visit_monitor.unmatched.candidates %}
+                <article class="patient visit-candidate visit-unmatched-candidate" data-visit-encounter-key="{{ candidate.encounter_key }}">
+                  <div class="patient-main">
+                    <div class="patient-identity">
+                      <strong>#{{ candidate.patient_no }} {{ candidate.patient_name }}</strong>
+                    </div>
+                    <span class="secondary">病歷號 {{ candidate.patient_no }} · 證據狀態 {{ candidate.status }}</span>
+                  </div>
+                  <span class="secondary">醫師 {{ candidate.doctor_code }} · {{ candidate.clinic_session }} · {{ candidate.evidence_reason }}</span>
+                </article>
+              {% else %}
+                <p class="empty">目前沒有未納入診間的 VISIT 候選</p>
+              {% endfor %}
+              <h3>未解析／刪除／已完成關聯</h3>
+              {% for diagnostic in visit_monitor.diagnostics %}
+                <article class="visit-diagnostic" data-visit-record-number="{{ diagnostic.record_number }}">
+                  <strong>VISIT 紀錄 #{{ diagnostic.record_number }}</strong>
+                  <span class="secondary">{{ diagnostic.reason }}</span>
+                </article>
+              {% else %}
+                <p class="empty">目前沒有 VISIT 關聯診斷</p>
+              {% endfor %}
+          </details>
 
-      <section class="unmatched" aria-label="未納入一診／二診篩選">
-        <div class="section-heading"><h2>未納入一診／二診篩選</h2></div>
-        <h3>候診</h3>
-        {% for encounter in board.unmatched.waiting %}
-          {{ patient_card(encounter, read_only=true) }}
-        {% else %}
-          <p class="empty">目前沒有未納入篩選的候診掛號</p>
-        {% endfor %}
-        <h3>已掛暫離</h3>
-        {% for encounter in board.unmatched.away %}
-          {{ patient_card(encounter, read_only=true) }}
-        {% else %}
-          <p class="empty">目前沒有未納入篩選的已掛暫離掛號</p>
-        {% endfor %}
-        <h3>已約未到</h3>
-        {% for encounter in board.unmatched.preregistered %}
-          {{ patient_card(encounter, read_only=true) }}
-        {% else %}
-          <p class="empty">目前沒有未納入篩選的已約未到掛號</p>
-        {% endfor %}
-        <h3>已完成</h3>
-        {% for encounter in board.unmatched.completed %}
-          {{ patient_card(encounter, read_only=true) }}
-        {% else %}
-          <p class="empty">目前沒有未納入篩選的已完成掛號</p>
-        {% endfor %}
-      </section>
+          <section class="unmatched" aria-label="未納入一診／二診篩選">
+            <div class="section-heading"><h2>未納入一診／二診篩選</h2></div>
+            <h3>候診</h3>
+            {% for encounter in board.unmatched.waiting %}
+              {{ patient_card(encounter, read_only=true) }}
+            {% else %}
+              <p class="empty">目前沒有未納入篩選的候診掛號</p>
+            {% endfor %}
+            <h3>已掛暫離</h3>
+            {% for encounter in board.unmatched.away %}
+              {{ patient_card(encounter, read_only=true) }}
+            {% else %}
+              <p class="empty">目前沒有未納入篩選的已掛暫離掛號</p>
+            {% endfor %}
+            <h3>已約未到</h3>
+            {% for encounter in board.unmatched.preregistered %}
+              {{ patient_card(encounter, read_only=true) }}
+            {% else %}
+              <p class="empty">目前沒有未納入篩選的已約未到掛號</p>
+            {% endfor %}
+            <h3>已完成</h3>
+            {% for encounter in board.unmatched.completed %}
+              {{ patient_card(encounter, read_only=true) }}
+            {% else %}
+              <p class="empty">目前沒有未納入篩選的已完成掛號</p>
+            {% endfor %}
+          </section>
 
-      <details class="unconfirmed" aria-label="診別未確認">
-        <summary>診別未確認 ({{ unconfirmed_count }})</summary>
-        {% for room_id in selected_rooms %}
-          <h3>{{ room_label(room_id) }} · 候診</h3>
-          {% for encounter in board.unconfirmed.rooms[room_id].waiting %}
-            {{ patient_card(encounter) }}
-          {% else %}
-            <p class="empty">目前沒有診別未確認的候診病人</p>
-          {% endfor %}
-          <h3>{{ room_label(room_id) }} · 已掛暫離</h3>
-          {% for encounter in board.unconfirmed.rooms[room_id].away %}
-            {{ patient_card(encounter) }}
-          {% else %}
-            <p class="empty">目前沒有診別未確認的已掛暫離病人</p>
-          {% endfor %}
-          <h3>{{ room_label(room_id) }} · 已約未到</h3>
-          {% for encounter in board.unconfirmed.rooms[room_id].preregistered %}
-            {{ patient_card(encounter) }}
-          {% else %}
-            <p class="empty">目前沒有診別未確認的已約未到病人</p>
-          {% endfor %}
-        {% endfor %}
-        <h3>未納入一診／二診篩選 · 候診</h3>
-        {% for encounter in board.unconfirmed.unmatched.waiting %}
-          {{ patient_card(encounter, read_only=true) }}
-        {% else %}
-          <p class="empty">目前沒有此類掛號</p>
-        {% endfor %}
-        <h3>未納入一診／二診篩選 · 已掛暫離</h3>
-        {% for encounter in board.unconfirmed.unmatched.away %}
-          {{ patient_card(encounter, read_only=true) }}
-        {% else %}
-          <p class="empty">目前沒有此類掛號</p>
-        {% endfor %}
-        <h3>未納入一診／二診篩選 · 已約未到</h3>
-        {% for encounter in board.unconfirmed.unmatched.preregistered %}
-          {{ patient_card(encounter, read_only=true) }}
-        {% else %}
-          <p class="empty">目前沒有此類掛號</p>
-        {% endfor %}
-        <h3>一診／二診已完成</h3>
-        {% for encounter in unconfirmed_completed_encounters %}
-          {{ patient_card(encounter) }}
-        {% else %}
-          <p class="empty">沒有診別未確認的已完成掛號</p>
-        {% endfor %}
-        <h3>未納入一診／二診篩選 · 已完成</h3>
-        {% for encounter in board.unconfirmed.unmatched.completed %}
-          {{ patient_card(encounter, read_only=true) }}
-        {% else %}
-          <p class="empty">目前沒有此類掛號</p>
-        {% endfor %}
+          <details class="unconfirmed" aria-label="診別未確認">
+            <summary>診別未確認 ({{ unconfirmed_count }})</summary>
+            {% for room_id in selected_rooms %}
+              <h3>{{ room_label(room_id) }} · 候診</h3>
+              {% for encounter in board.unconfirmed.rooms[room_id].waiting %}
+                {{ patient_card(encounter) }}
+              {% else %}
+                <p class="empty">目前沒有診別未確認的候診病人</p>
+              {% endfor %}
+              <h3>{{ room_label(room_id) }} · 已掛暫離</h3>
+              {% for encounter in board.unconfirmed.rooms[room_id].away %}
+                {{ patient_card(encounter) }}
+              {% else %}
+                <p class="empty">目前沒有診別未確認的已掛暫離病人</p>
+              {% endfor %}
+              <h3>{{ room_label(room_id) }} · 已約未到</h3>
+              {% for encounter in board.unconfirmed.rooms[room_id].preregistered %}
+                {{ patient_card(encounter) }}
+              {% else %}
+                <p class="empty">目前沒有診別未確認的已約未到病人</p>
+              {% endfor %}
+            {% endfor %}
+            <h3>未納入一診／二診篩選 · 候診</h3>
+            {% for encounter in board.unconfirmed.unmatched.waiting %}
+              {{ patient_card(encounter, read_only=true) }}
+            {% else %}
+              <p class="empty">目前沒有此類掛號</p>
+            {% endfor %}
+            <h3>未納入一診／二診篩選 · 已掛暫離</h3>
+            {% for encounter in board.unconfirmed.unmatched.away %}
+              {{ patient_card(encounter, read_only=true) }}
+            {% else %}
+              <p class="empty">目前沒有此類掛號</p>
+            {% endfor %}
+            <h3>未納入一診／二診篩選 · 已約未到</h3>
+            {% for encounter in board.unconfirmed.unmatched.preregistered %}
+              {{ patient_card(encounter, read_only=true) }}
+            {% else %}
+              <p class="empty">目前沒有此類掛號</p>
+            {% endfor %}
+            <h3>一診／二診已完成</h3>
+            {% for encounter in unconfirmed_completed_encounters %}
+              {{ patient_card(encounter) }}
+            {% else %}
+              <p class="empty">沒有診別未確認的已完成掛號</p>
+            {% endfor %}
+            <h3>未納入一診／二診篩選 · 已完成</h3>
+            {% for encounter in board.unconfirmed.unmatched.completed %}
+              {{ patient_card(encounter, read_only=true) }}
+            {% else %}
+              <p class="empty">目前沒有此類掛號</p>
+            {% endfor %}
+          </details>
+        </div>
       </details>
 
       <details class="completed-section">

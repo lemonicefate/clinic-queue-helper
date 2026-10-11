@@ -1416,6 +1416,11 @@ def test_visit_unmatched_and_diagnostics_render_in_separate_read_only_section(tm
     app.state.visit_monitor.poll_once()
 
     page_response = asyncio.run(get_json(app, "/"))
+    developer_area = re.search(r'<details class="developer-area"[^>]*>', page_response.text)
+    assert developer_area is not None
+    assert " open" not in developer_area.group(0)
+    developer_area_end = page_response.text.index('<details class="completed-section"', developer_area.end())
+    developer_area_content = page_response.text[developer_area.end() : developer_area_end]
     visit_diagnostics = re.search(
         r'<details class="visit-monitor-diagnostics"[^>]*>.*?</details>',
         page_response.text,
@@ -1428,6 +1433,9 @@ def test_visit_unmatched_and_diagnostics_render_in_separate_read_only_section(tm
     )
 
     assert page_response.status_code == 200
+    assert '<details class="visit-monitor-diagnostics"' in developer_area_content
+    assert '<section class="unmatched"' in developer_area_content
+    assert '<details class="unconfirmed" aria-label="診別未確認">' in developer_area_content
     assert visit_diagnostics is not None
     assert "#100001" in visit_diagnostics.group(0)
     assert "no unique NUM+CCDOC+date+TIME_KIND encounter match" in visit_diagnostics.group(0)
