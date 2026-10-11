@@ -4,6 +4,10 @@ This glossary defines the additional language used by the default read-only HIS 
 
 ## HIS observation
 
+**掛號計價類型 (`RG011M1.KIND`)**:
+A value on an RG011M1 registration that classifies its billing and registration purpose. `KIND=1` denotes a consultation visit, while `KIND=4` denotes a front-desk transaction without consultation; it is distinct from `TIME_KIND`.
+_Avoid_: 門診時段, DBF 欄位型別, 未限定的 kind
+
 **HIS 目前病人觀測**:
 A read-only observation of HIS records that may indicate which patient a physician is currently seeing. It is separate from HIS-derived visit states and local presence, and does not change the queue or declare an application-owned consultation state.
 _Avoid_: 把觀測結果稱為應用程式管理的正式就診狀態

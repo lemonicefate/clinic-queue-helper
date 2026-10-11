@@ -18,6 +18,12 @@ application's perspective. Before starting, confirm that each room has the
 fixed `看診中` card above `候診中` and that it has no call, completion,
 assignment, presence, overdue, or reorder control.
 
+Confirm that the RG011M1 source contains `KIND`. Only a trimmed `KIND=1`
+registration is eligible for the consultation queue and the current-patient
+card. Other, blank, or unsupported values must produce no patient card and no
+waiting-card suppression; a missing source field must produce a generic HIS
+source error without exposing those records.
+
 All raw captures must stay in a clinic-approved, access-controlled location
 outside this repository and outside Git, GitHub, CI, the issue tracker, issue
 comments, and pull requests. This includes real or synthetic DBF copies,

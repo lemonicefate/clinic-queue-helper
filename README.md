@@ -20,6 +20,7 @@ A small clinic LAN utility for displaying today's HIS registrations and managing
 4. Edit `config.json` for the clinic:
 
    - Set `his_data_path` to the HIS data share containing `RG011M1.DBF` and, when available, `PD001M1.DBF`.
+   - `RG011M1.DBF` must contain the `KIND` registration category field. Only trimmed `KIND=1` registrations appear in any consultation list; `KIND=4`, blank, and unknown values are excluded.
    - Physician filters are entered on the queue page under 一診 and 二診. The fields are shared by every workstation connected to this server and save when focus leaves the field. Leave a field blank when that room has no session. Each non-empty `CCDOC` code can belong to only one room.
    - For an existing installation, `doctor_room_map` in `config.json` is used only to seed an empty room filter the first time the database starts. New installations can leave it empty and enter the codes on the page.
    - The current HIS schema uses `NUM` for the registration's patient number and in `PD001M1.DBF`, with `NAME` for the patient name. Set `patient_number_field` to the matching patient-number field in `PD001M1.DBF` and `patient_name_field` to the name field; leave the name field empty to show chart numbers instead.
@@ -40,6 +41,11 @@ A small clinic LAN utility for displaying today's HIS registrations and managing
 On the server, open `http://127.0.0.1:8000`. From another clinic computer, open `http://<server-lan-ip>:8000`, replacing the address with the LAN IPv4 address of the Windows host. If another computer cannot connect, check that Windows Firewall allows the configured port on the clinic's private network.
 
 Room views use `/?room=1` for 一診 and `/?room=2` for 二診; the default `/` view shows both rooms. Room membership comes only from matching the HIS `CCDOC` value to the two shared filters. Encounters matching neither filter remain visible in a separate read-only section; staff cannot manually assign them. A blank room filter means that room has no active session and no queue.
+
+The consultation lists use the HIS `RG011M1.KIND` field as an eligibility
+boundary. Only `KIND=1` records are shown. A missing `KIND` field makes HIS
+synchronization fail closed with a generic source warning; the application does
+not guess from `TREAT`, `OVER`, or `TIME_KIND`.
 
 The completed list stays collapsed until opened. `診別未確認` is also collapsed by default and displays a record count in its heading. During testing, it remains visible even when the count is zero. Room queues support presence, overdue, and reorder controls; HIS handles patient calling.
 

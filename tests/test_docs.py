@@ -23,6 +23,8 @@ def test_readme_documents_windows_setup_configuration_and_lan_url():
     assert "/?room=1" in readme
     assert "Browsers check for shared queue changes every second" in readme
     assert "never write back to HIS files" in readme
+    assert "RG011M1.KIND" in readme
+    assert "Only trimmed `KIND=1`" in readme
 
 
 def test_visit_manual_validation_procedure_is_controlled_and_keeps_captures_outside_repo():
@@ -66,6 +68,9 @@ def test_visit_card_domain_docs_record_the_superseding_decision():
     accepted_adr = (PROJECT_ROOT / "docs" / "adr" / "0006-default-visit-current-patient-card.md").read_text(
         encoding="utf-8"
     )
+    kind_adr = (PROJECT_ROOT / "docs" / "adr" / "0007-rg011m1-kind-eligibility.md").read_text(
+        encoding="utf-8"
+    )
     specification = (PROJECT_ROOT / "SPEC.md").read_text(encoding="utf-8")
 
     assert "看診中卡片" in glossary
@@ -76,3 +81,7 @@ def test_visit_card_domain_docs_record_the_superseding_decision():
     assert "Status: accepted" in accepted_adr
     assert "Default VISIT current-patient card" in accepted_adr
     assert "Follow-up: Default VISIT current-patient card" in specification
+    assert "掛號計價類型" in glossary
+    assert "RG011M1.KIND" in context
+    assert "Status: accepted" in kind_adr
+    assert "KIND=1" in kind_adr

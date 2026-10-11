@@ -4,6 +4,9 @@ Terms for describing a patient's clinic visit and the local waiting order.
 
 ## Language
 
+**掛號計價類型 (`RG011M1.KIND`)**:
+A registration value describing the billing and registration purpose. `KIND=1` means the registration is for a consultation; `KIND=4` means a front-desk transaction without consultation. It is separate from `TIME_KIND`, which identifies the clinic session.
+
 **門診時段 (`TIME_KIND`)**:
 A visit's clinic session category: `1` is 早診, `2` is 午診, and `3` is 晚診.
 
@@ -26,7 +29,7 @@ A visit whose `TIME_KIND` is missing or does not identify one of the three defin
 The ordered set of encounters waiting in one consultation room during one clinic session.
 
 **候診中**:
-An active encounter that HIS classifies as waiting. `TREAT=C` remains outside this list; other active, non-completed HIS states enter it through synchronization.
+An active `KIND=1` encounter that HIS classifies as waiting. `TREAT=C` remains outside this list; other active, non-completed HIS states enter it through synchronization. Registrations with any other or unavailable `KIND` are not displayed.
 
 **就診狀態**:
 The HIS-derived visit states are 候診, 完成, and 已約未到. They are separate from local presence; the available HIS data does not identify a separate 已叫號 or 看診中 state.

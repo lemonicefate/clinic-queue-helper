@@ -44,6 +44,7 @@ def write_rg_fixture(path, rows):
                     "CCDATE": row.get("CCDATE", today),
                     "CCTIME": row.get("CCTIME", "0900"),
                     "CCDOC": row.get("CCDOC", "DOC1"),
+                    "KIND": row.get("KIND", "1"),
                     "TIME_KIND": row.get("TIME_KIND", "1"),
                     "OVER": row.get("OVER", ""),
                     "TREAT": row.get("TREAT", "N"),
@@ -62,6 +63,7 @@ def write_rg_fixture(path, rows):
                 "CCDATE": today,
                 "CCTIME": "0900",
                 "CCDOC": doctor,
+                "KIND": "1",
                 "TIME_KIND": "1",
                 "OVER": "",
                 "TREAT": "N",
@@ -78,6 +80,7 @@ def write_rg_fixture(path, rows):
             ("CCDATE", "D", 8),
             ("CCTIME", "C", 4),
             ("CCDOC", "C", 6),
+            ("KIND", "C", 1),
             ("TIME_KIND", "C", 1),
             ("OVER", "C", 1),
             ("TREAT", "C", 1),
@@ -173,6 +176,66 @@ def test_visit_monitor_is_always_on_and_projects_a_stable_startup_card(tmp_path)
     assert monitor["rooms"]["1"]["candidates"][0]["patient_no"] == "100001"
     assert "看診中" in page
     assert "看診中（實驗）" not in page
+
+
+def test_non_consultation_kind_cannot_project_or_suppress_a_visit_card(tmp_path):
+    config_path, his_path = write_config(
+        tmp_path,
+        enabled=False,
+        doctor_room_map={"DOC1": 1},
+    )
+    write_rg_fixture(
+        his_path / "RG011M1.DBF",
+        [
+            {
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "KIND": "4",
+                "RELKEY": "RG-4",
+                "SYS_2015": "SYS-4",
+            },
+            {
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "KIND": "1",
+                "RELKEY": "RG-1",
+                "SYS_2015": "SYS-1",
+            },
+        ],
+    )
+    write_visit_fixture(
+        his_path / "RG011M1_VISIT.DBF",
+        [
+            {
+                "SYS_2015": "SYS-4",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090000",
+            },
+            {
+                "SYS_2015": "SYS-1",
+                "NUM": "100001",
+                "CCDOC": "DOC1",
+                "SDATE": date.today(),
+                "TIME_KIND": "1",
+                "STIME": "090001",
+            },
+        ],
+    )
+
+    app = create_app(load_config(config_path))
+    payload = asyncio.run(get_json(app, "/api/queue")).json()
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert [entry["encounter_key"] for entry in payload["rooms"]["1"]["waiting"]] == []
+    assert [candidate["encounter_key"] for candidate in payload["visit_monitor"]["rooms"]["1"]["candidates"]] == [
+        "relkey:RG-1"
+    ]
+    assert payload["visit_monitor"]["suppressed_encounter_keys"] == ["relkey:RG-1"]
+    assert "relkey:RG-4" not in serialized
+    assert "100001" in serialized
 
 
 def test_unique_current_patient_suppresses_all_matching_waiting_cards_only_in_scope(tmp_path):
@@ -1646,6 +1709,7 @@ def test_visit_prefers_exact_sys2015_association_over_composite_fallback(tmp_pat
             ("CCDATE", "D", 8),
             ("CCTIME", "C", 4),
             ("CCDOC", "C", 6),
+            ("KIND", "C", 1),
             ("TIME_KIND", "C", 1),
             ("SYS_2015", "C", 12),
             ("OVER", "C", 1),
@@ -1660,6 +1724,7 @@ def test_visit_prefers_exact_sys2015_association_over_composite_fallback(tmp_pat
                 "CCDATE": today,
                 "CCTIME": "0900",
                 "CCDOC": "DOC1",
+                "KIND": "1",
                 "TIME_KIND": "1",
                 "SYS_2015": "SYS-A",
                 "TREAT": "N",
@@ -1672,6 +1737,7 @@ def test_visit_prefers_exact_sys2015_association_over_composite_fallback(tmp_pat
                 "CCDATE": today,
                 "CCTIME": "0910",
                 "CCDOC": "DOC1",
+                "KIND": "1",
                 "TIME_KIND": "1",
                 "SYS_2015": "SYS-B",
                 "TREAT": "N",

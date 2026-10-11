@@ -324,6 +324,8 @@ Current working interpretation:
 
 | `CCDOC` | scheduled/current physician |
 
+| `KIND` | registration billing / consultation category; only `KIND=1` is eligible for the consultation lists; other, blank, or unsupported values are not displayed |
+
 | `CRTUSER` | registration/operator account |
 
 | `USID` | registration/operator account |
@@ -370,6 +372,18 @@ The primary criterion for today's clinic queue is:
 
 `TETDAY == local clinic date`
 
+The registration must also have a trimmed `KIND` value equal to `1`. This is the
+consultation eligibility condition for every current-day queue category and for
+the read-only VISIT current-patient projection. `KIND=4` represents a
+front-desk transaction without consultation; blank, unknown, or unsupported
+values are excluded. The filter applies to each encounter, so a `KIND=4`
+registration does not exclude another `KIND=1` registration with the same
+patient number.
+
+If the RG011M1 schema does not contain `KIND`, synchronization fails closed
+with a generic HIS source error. The application does not infer eligibility
+from other fields or display those records.
+
 The local clinic date is the server computer's current system-local date. Polling re-evaluates today's date, including after the server crosses local midnight. No manual date picker is provided.
 
 NOT:
@@ -387,6 +401,11 @@ from active queues.
 However, if an already tracked record later becomes deleted, reconcile it as described below.
 
 After selecting today's encounters, the selected `TIME_KIND` determines the session-specific view and queue order. A missing or unsupported `TIME_KIND` is shown separately as `診別未確認` and is not included in one of the three session queues.
+
+If a tracked encounter changes from `KIND=1` to another or unavailable value,
+it is removed from all current-day lists and from VISIT association on the next
+successful poll. If it later returns to `KIND=1`, it re-enters as a new queue
+member at the tail of its room-and-session sequence.
 
 ---
 

@@ -35,6 +35,7 @@ class HISPoller:
         self.store = store
         self.recovery_interval_seconds = recovery_interval_seconds
         self.tracked_by_recno: dict[int, EncounterSnapshot] = {}
+        self._ineligible_record_bytes: dict[int, bytes] = {}
         self._encounter_snapshot: tuple[EncounterSnapshot, ...] = ()
         self.pending_recno: set[int] = set()
         self.last_record_count: int | None = None
@@ -87,6 +88,7 @@ class HISPoller:
         clinic_date = date.today()
         names = PatientNameLookup(self.config)
         unreadable: list[int] = []
+        record_bytes: dict[int, bytes] = {}
         encounters = scan_today(
             self.config,
             clinic_date,
@@ -94,6 +96,7 @@ class HISPoller:
             patient_names=names,
             header=header,
             record_errors=unreadable,
+            record_bytes=record_bytes,
         )
         self.store.reconcile(
             encounters,
@@ -102,6 +105,11 @@ class HISPoller:
             unreadable_recno=unreadable,
         )
         self.tracked_by_recno = {encounter.recno: encounter for encounter in encounters}
+        self._ineligible_record_bytes = {
+            recno: raw_bytes
+            for recno, raw_bytes in record_bytes.items()
+            if recno not in self.tracked_by_recno
+        }
         self._encounter_snapshot = tuple(self.tracked_by_recno.values())
         self.pending_recno = set(unreadable)
         self.last_record_count = header.record_count
@@ -127,7 +135,11 @@ class HISPoller:
     def _poll_incremental(self, header: DBFHeader) -> None:
         assert self.last_record_count is not None
         first_new = self.last_record_count + 1
-        recnos = set(self.tracked_by_recno) | self.pending_recno
+        recnos = (
+            set(self.tracked_by_recno)
+            | set(self._ineligible_record_bytes)
+            | self.pending_recno
+        )
         if first_new <= header.record_count:
             recnos.update(range(first_new, header.record_count + 1))
         unreadable: list[int] = []
@@ -141,14 +153,19 @@ class HISPoller:
         ):
             self.pending_recno.discard(record.recno)
             previous = self.tracked_by_recno.get(record.recno)
+            previous_bytes = self._ineligible_record_bytes.get(record.recno)
             if previous is not None and self._record_matches_snapshot(record, previous):
+                continue
+            if previous is None and previous_bytes == record.raw_bytes:
                 continue
             encounter = snapshot_from_record(self.config, record, date.today(), names)
             if encounter is None:
+                self._ineligible_record_bytes[record.recno] = record.raw_bytes
                 if previous is not None:
                     self.store.remove_encounter(previous.encounter_key)
                     self.tracked_by_recno.pop(record.recno, None)
                 continue
+            self._ineligible_record_bytes.pop(record.recno, None)
             if previous is not None and previous.encounter_key != encounter.encounter_key:
                 self.store.remove_encounter(previous.encounter_key)
             self.store.reconcile(
